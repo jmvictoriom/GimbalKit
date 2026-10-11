@@ -1,0 +1,46 @@
+Conectados al sistema con FFF0: ['OMSE-jesus']
+
+Conectado a ECE8E81B-DC63-6CCA-E717-0869165FB66F · MTU 247
+Servicio 0000180a-0000-1000-8000-00805f9b34fb (Device Information)
+   car. 00002a29-0000-1000-8000-00805f9b34fb ['read']
+Servicio 0000fff0-0000-1000-8000-00805f9b34fb (Vendor specific)
+   car. 0000fff4-0000-1000-8000-00805f9b34fb ['notify']
+   car. 0000fff5-0000-1000-8000-00805f9b34fb ['write-without-response', 'write']
+   car. 0000fff3-0000-1000-8000-00805f9b34fb ['notify', 'write']
+Servicio 0000ff61-0000-1000-8000-00805f9b34fb (Vendor specific)
+
+Escuchando FFF4 6 s…
+   DUML len=19  7.4 ->2.0  seq=15942 cmd_set=0x04 cmd=0x57 | 00 00 00 00 01 00
+   DUML len=20  4.0 ->2.0  seq=4566  cmd_set=0x04 cmd=0x66 | 01 47 04 fe cb 2e 43
+   DUML len=19  7.4 ->2.0  seq=15943 cmd_set=0x04 cmd=0x57 | 00 00 00 00 01 00
+   DUML len=34  4.0 ->2.0  seq=4672  cmd_set=0x04 cmd=0x6f | 02 13 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   DUML len=20  4.0 ->2.0  seq=5175  cmd_set=0x04 cmd=0x66 | 01 47 04 e7 bf 2e 43
+   DUML len=34  4.0 ->2.0  seq=5432  cmd_set=0x04 cmd=0x6f | 02 13 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   DUML len=14  4.0 ->2.0  seq=5463  cmd_set=0x04 cmd=0x1c | 46
+   DUML len=53  7.4 ->2.0  seq=3188  cmd_set=0x05 cmd=0x06 | 19 08 1c 00 00 00 00 00 00 00 00 00 00 00 00 00 04 0e 04 0e 00 00 00 00 00 00 00 00 00 00 00 00 9b 0b 00 00 00 00 00 00
+   DUML len=62  4.0 ->2.0  seq=6984  cmd_set=0x04 cmd=0x05 | 03 07 00 00 05 00 84 00 04 00 20 01 f9 27 0c 00 97 fa 00 00 fe ff 4e 03 c9 f4 a7 3d 45 67 b5 bd 0c 97 33 bf 1d cd 33 3f 00 00 00 00 01 00 00 00 00
+   DUML len=18  4.0 ->2.0  seq=6985  cmd_set=0x04 cmd=0x38 | 00 00 64 64 00
+   DUML len=14  4.0 ->2.0  seq=6991  cmd_set=0x04 cmd=0x1c | 46
+   DUML len=17  4.0 ->2.0  seq=7021  cmd_set=0x00 cmd=0xf1 | 80 00 00 00
+   DUML len=53  7.4 ->2.0  seq=3190  cmd_set=0x05 cmd=0x06 | 19 13 1c 00 00 00 00 00 00 00 00 00 00 00 00 00 06 0e 06 0e 00 00 00 00 00 00 00 00 00 00 00 00 9b 0b 00 00 00 00 00 00
+   DUML len=18  4.0 ->2.0  seq=7067  cmd_set=0x04 cmd=0x27 | 08 00 10 00 00
+   DUML len=14  4.0 ->2.0  seq=8469  cmd_set=0x00 cmd=0x00 | 11
+   DUML len=62  4.0 ->2.0  seq=10037 cmd_set=0x04 cmd=0x05 | 03 07 00 00 05 00 84 00 04 00 20 01 e1 2b 0c 00 97 fa 00 00 fd ff 4f 03 f6 ee a7 3d c1 5e b5 bd 1c 98 33 bf 45 cc 33 3f 00 00 00 00 01 00 00 00 00
+   DUML len=18  4.0 ->2.0  seq=10038 cmd_set=0x04 cmd=0x38 | 00 00 64 64 00
+   DUML len=17  4.0 ->2.0  seq=10074 cmd_set=0x00 cmd=0xf1 | 80 00 00 00
+   DUML len=18  4.0 ->2.0  seq=10120 cmd_set=0x04 cmd=0x27 | 08 00 10 00 00
+   DUML len=14  4.0 ->2.0  seq=13045 cmd_set=0x00 cmd=0x00 | 11
+
+Giro suave: derecha, izquierda, parar
+
+Resumen de mensajes (cmd_set, cmd): veces
+   0x00 0x00: 8
+   0x00 0xf1: 12
+   0x04 0x05: 12
+   0x04 0x1c: 31
+   0x04 0x27: 12
+   0x04 0x38: 12
+   0x04 0x57: 252
+   0x04 0x66: 63
+   0x04 0x6f: 50
+   0x05 0x06: 25

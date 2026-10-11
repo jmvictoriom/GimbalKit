@@ -8,12 +8,15 @@ let package = Package(
         .library(name: "GimbalKit", targets: ["GimbalKit"]),
         .library(name: "GimbalKitSim", targets: ["GimbalKitSim"]),
         .library(name: "GimbalKitDJI", targets: ["GimbalKitDJI"]),
+        .library(name: "GimbalKitBLE", targets: ["GimbalKitBLE"]),
     ],
     targets: [
         .target(name: "GimbalKit"),
         .target(name: "GimbalKitSim", dependencies: ["GimbalKit"]),
         .target(name: "GimbalKitDJI", dependencies: ["GimbalKit"]),
+        .target(name: "GimbalKitBLE", dependencies: ["GimbalKitDJI"]),
+        .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
         .testTarget(name: "GimbalKitTests", dependencies: ["GimbalKit", "GimbalKitSim"]),
-        .testTarget(name: "GimbalKitDJITests", dependencies: ["GimbalKitDJI"]),
+        .testTarget(name: "GimbalKitDJITests", dependencies: ["GimbalKitDJI", "GimbalKit"]),
     ]
 )

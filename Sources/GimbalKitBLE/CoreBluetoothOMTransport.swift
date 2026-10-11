@@ -2,6 +2,13 @@ import CoreBluetooth
 import Foundation
 import GimbalKitDJI
 
+private final class ConnectionCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    func cancel() { lock.withLock { cancelled = true } }
+    var isCancelled: Bool { lock.withLock { cancelled } }
+}
+
 public enum BLEError: Error, Equatable {
     case bluetoothUnavailable, notFound, timedOut, discoveryFailed
 }
@@ -11,7 +18,13 @@ public enum BLEError: Error, Equatable {
 /// Todo el estado mutable se toca solo en `queue` (también el delegado).
 public final class CoreBluetoothOMTransport: NSObject, OMTransport, @unchecked Sendable {
     public let notifications: AsyncStream<[UInt8]>
-    public var onDisconnect: (@Sendable () -> Void)?
+    private let callbackLock = NSLock()
+    private var disconnectCallback: (@Sendable () -> Void)?
+    public var onDisconnect: (@Sendable () -> Void)? {
+        get { callbackLock.withLock { disconnectCallback } }
+        set { callbackLock.withLock { disconnectCallback = newValue } }
+    }
+    private var connectionTicket: UUID?
 
     private let continuation: AsyncStream<[UInt8]>.Continuation
     private let queue = DispatchQueue(label: "gimbalkit.ble")
@@ -32,17 +45,39 @@ public final class CoreBluetoothOMTransport: NSObject, OMTransport, @unchecked S
     }
 
     public func connect(timeout: TimeInterval = 15) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            queue.async {
-                self.connection = cont
-                self.queue.asyncAfter(deadline: .now() + timeout) { self.finishConnection(.failure(BLEError.timedOut)) }
-                self.beginIfPoweredOn()
+        try Task.checkCancellation()
+        let ticket = UUID()
+        let cancellation = ConnectionCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                queue.async {
+                    guard !cancellation.isCancelled else { cont.resume(throwing: CancellationError()); return }
+                    guard self.connection == nil else { cont.resume(throwing: BLEError.discoveryFailed); return }
+                    self.connectionTicket = ticket
+                    self.connection = cont
+                    self.queue.asyncAfter(deadline: .now() + timeout) {
+                        guard self.connectionTicket == ticket else { return }
+                        self.central.stopScan()
+                        self.finishConnection(.failure(BLEError.timedOut))
+                    }
+                    self.beginIfPoweredOn()
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            self.queue.async {
+                guard self.connectionTicket == ticket else { return }
+                self.central.stopScan()
+                if let peripheral = self.peripheral { self.central.cancelPeripheralConnection(peripheral) }
+                self.finishConnection(.failure(CancellationError()))
             }
         }
     }
-
     public func disconnect() {
         queue.async {
+            self.central.stopScan()
+            self.finishConnection(.failure(CancellationError()))
+            self.notifyCharacteristic = nil; self.writeCharacteristic = nil
             if let peripheral = self.peripheral { self.central.cancelPeripheralConnection(peripheral) }
         }
     }
@@ -96,7 +131,7 @@ public final class CoreBluetoothOMTransport: NSObject, OMTransport, @unchecked S
 
     private func finishConnection(_ result: Result<Void, Error>) {
         guard let cont = connection else { return }
-        connection = nil
+        connection = nil; connectionTicket = nil
         cont.resume(with: result)
     }
 }

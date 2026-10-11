@@ -238,7 +238,11 @@ private actor RunawayPoseFeedbackDevice: PoseFeedbackDevice {
     #expect(await runner.run(.connectionTelemetry).status == .passed)
     #expect(await runner.run(.restStability).status == .passed)
     #expect(await runner.run(.battery).status == .passed)
+    let before = await simulator.commands.count
     #expect(await runner.run(.yawMovement).status == .passed)
+    // Cada orden SPEED de la Osmo dura ~0,5 s: un tramo de 2 s exige refrescarla cada 0,3 s (≥ 6 órdenes por tramo, 2 tramos).
+    let speedCommands = await simulator.commands.dropFirst(before).filter { if case .speed = $0 { true } else { false } }
+    #expect(speedCommands.count >= 12, "órdenes de velocidad enviadas: \(speedCommands.count)")
     #expect(await runner.run(.stop).status == .passed)
     #expect(await simulator.commands.contains(.stop))
     // Only navigation advances simulated time. Its safety watcher observes it.

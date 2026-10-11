@@ -101,21 +101,31 @@ public actor LabHardwareTestRunner {
             return ["percent": Double(value.percent), "charging": value.charging ? 1 : 0]
         case .yawMovement:
             try await controller.send(.speed(yaw: 10, pitch: 0, roll: 0), source: .app)
-            try await wait(2, origin: origin); await controller.stop(source: .app)
+            try await wait(2, origin: origin, refresh: .speed(yaw: 10, pitch: 0, roll: 0)); await controller.stop(source: .app)
+            // Asentamiento: la telemetría llega a ~1 Hz y retrasada; leer la pose justo al parar mide un giro a medias.
+            try await wait(2, origin: origin)
             let turned = await device.currentPose()?.yaw ?? origin.yaw
             let delta = turned - origin.yaw
             guard (16...24).contains(delta) else { throw LabTestFailure("Yaw +10 ×2s dio \(delta)°; esperado 20° ±4°", ["outbound_degrees": delta]) }
             try await controller.send(.speed(yaw: -10, pitch: 0, roll: 0), source: .app)
-            try await wait(2, origin: origin); await controller.stop(source: .app)
+            try await wait(2, origin: origin, refresh: .speed(yaw: -10, pitch: 0, roll: 0)); await controller.stop(source: .app)
+            // Asentamiento: la telemetría llega a ~1 Hz y retrasada; leer la pose justo al parar mide un giro a medias.
+            try await wait(2, origin: origin)
             let returned = await device.currentPose()?.yaw ?? turned
             let error = abs(returned - origin.yaw)
             guard error <= 3 else { throw LabTestFailure("Retorno desviado \(error)°; máximo 3°", ["outbound_degrees": delta, "return_error_degrees": error]) }
             return ["outbound_degrees": delta, "return_error_degrees": error]
         case .stop:
             try await controller.send(.speed(yaw: 6, pitch: 0, roll: 0), source: .app)
-            try await wait(0.3, origin: origin); await controller.stop(source: .app)
+            try await wait(1, origin: origin, refresh: .speed(yaw: 6, pitch: 0, roll: 0)); await controller.stop(source: .app)
+            // Asentamiento: la telemetría llega a ~1 Hz y retrasada; la referencia se toma cuando ya ha alcanzado el reposo.
+            try await wait(2, origin: origin)
             let stopped = await device.currentPose() ?? origin
             let drift = try await observe(2, measureFrom: stopped, safetyOrigin: origin)
+            // Tramo de vuelta (sin aserción propia) para dejar la Osmo donde estaba y no acumular desplazamiento entre ejecuciones.
+            try await controller.send(.speed(yaw: -6, pitch: 0, roll: 0), source: .app)
+            try await wait(1, origin: origin, refresh: .speed(yaw: -6, pitch: 0, roll: 0)); await controller.stop(source: .app)
+            try await wait(2, origin: origin)
             guard drift <= 0.3 else { throw LabTestFailure("STOP dejó deriva \(drift)°", ["drift_after_stop_degrees": drift]) }
             return ["drift_after_stop_degrees": drift]
         case .zoneGoto:
@@ -151,15 +161,19 @@ public actor LabHardwareTestRunner {
             return ["constant_frames": Double(values.count)]
         }
     }
-    private func wait(_ seconds: Double, origin: Pose) async throws {
-        _ = try await observe(seconds, measureFrom: origin, safetyOrigin: origin)
+    private func wait(_ seconds: Double, origin: Pose, refresh: MoveCommand? = nil) async throws {
+        _ = try await observe(seconds, measureFrom: origin, safetyOrigin: origin, refresh: refresh)
     }
-    private func observe(_ seconds: Double, measureFrom reference: Pose, safetyOrigin: Pose) async throws -> Double {
+    /// `refresh`: orden de velocidad que se reenvía cada 0,3 s. Medido en la SE: cada orden SPEED dura solo ~0,5 s,
+    /// así que un movimiento continuo exige refrescarla (y el deadman del controlador también lo exige).
+    private func observe(_ seconds: Double, measureFrom reference: Pose, safetyOrigin: Pose,
+                         refresh: MoveCommand? = nil) async throws -> Double {
         let steps = max(1, Int(ceil(seconds / 0.1)))
         var maximum = 0.0
-        for _ in 0..<steps {
+        for step in 0..<steps {
             try Task.checkCancellation()
             try await clock.sleep(seconds / Double(steps))
+            if let refresh, (step + 1) % 3 == 0, step + 1 < steps { try await controller.send(refresh, source: .app) }
             guard let sample = await device.poseSample(), sample.pose.isFinite else { throw LabTestFailure("Pose ausente o no finita") }
             let age = clock.now().timeIntervalSince(sample.receivedAt)
             guard age >= 0, age <= limits.staleSeconds else { throw LabTestFailure("Pose desactualizada durante la prueba", ["pose_age_seconds": age]) }

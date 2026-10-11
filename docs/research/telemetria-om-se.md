@@ -28,6 +28,23 @@ Hardware: Osmo Mobile SE (firmware sin comprobar), móvil montado, base sobre tr
 | Batería | 18 %, `charging` pasa a `true` al enchufarla (bit de carga confirmado) |
 | Autorización de Bluetooth | una app nueva necesita que se acepte el aviso del sistema la primera vez |
 
+## Banco de pruebas GimbalLab con la Osmo (2026-10-11, `--auto-run`)
+
+| Prueba | Resultado real |
+|---|---|
+| Conexión y telemetría viva | PASA: 1,0 Hz de actualización de pose |
+| Reposo estable (5 s) | PASA: deriva 0,005–0,02° (una vez 6,3° justo tras un giro: la Osmo aún se asentaba) |
+| Batería | PASA: 100 % con la carga completa |
+| Yaw: `+10 °/s` 2 s y vuelta con `−10 °/s` | PASA: **+20,99° de ida, error de vuelta 0,146°** |
+
+**Hallazgos de comportamiento (importantes para el diseño):**
+- **Cada orden SPEED dura solo ~0,5 s.** Una sola orden de 10 °/s movió 4,95°; refrescada cada 0,3 s durante 2 s, ~21°. Todo movimiento
+  continuo exige refrescar la orden (el deadman de 0,5 s del controlador ya lo exige).
+- **La pose va retrasada (~1 Hz y con latencia):** leerla justo al parar mide un giro a medias (14,3° en vez de 21°). Hay que esperar
+  ≥ 2 s de asentamiento tras `stop` antes de tomar una pose de referencia (así lo hace ya el navegador y ahora también el Lab).
+- Tras la prueba de yaw la prueba de «parada» necesita el mismo asentamiento (corregido); pendiente de re-validar en hardware.
+- Un binario con firma ad hoc que se reconstruye puede ser rechazado por macOS (`Taskgated Invalid Signature`) y perder el permiso de Bluetooth.
+
 ## Hipótesis / sin resolver
 
 - `0x04/0x57` (el más frecuente, 6 B) **no cambia nunca** (ni con joystick ni con botones): el mando físico no sale por este

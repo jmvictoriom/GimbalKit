@@ -63,11 +63,19 @@ Sources/GimbalHostSupport/
   HostModel.swift             Observation, servidor y estado de presentación
   HostInstanceLock.swift      exclusión de un segundo anfitrión antes de Bluetooth
 Sources/GimbalHostMac/GimbalHostApp.swift  vistas, adapter BLE y lifecycle AppKit
+Sources/GimbalLabSupport/
+  LabModel.swift              enlace inyectable, transporte observado, estado y mandos
+  LabCapture.swift            registro JSONL y lector compatible con capturas
+  LabHardwareTestRunner.swift batería reproducible e informe Markdown
+Sources/GimbalLabMac/GimbalLabApp.swift    ventana SwiftUI normal y composición BLE
 Sources/GimbalCLI/GimbalCLI.swift
 Sources/GimbalKitBLE/CoreBluetoothOMTransport.swift  cancelación de conexión y callback sincronizado
 scripts/build-host-mac.sh
+scripts/build-lab-mac.sh
+scripts/check-lab-bundle.sh
 Tests/GimbalKitTests/          NavigationControllerTests, GotoNavigatorTests, ZoneStoreTests
 Tests/GimbalKitDJITests/PoseSampleTests.swift
+Tests/GimbalKitDJITests/DUMLParserEventTests.swift, LabSupportTests.swift
 Tests/GimbalKitMCPTests/       LocalFilesTests, DispatcherTests, HTTPParserTests, HTTPServerTests, ClientTests
 Tests/GimbalHostSupportTests/  HostRuntimeTests, HostModelTests
 scripts/check-host-bundle.sh
@@ -3139,25 +3147,1468 @@ Expected: modelo con servidor falso, cancelación, endpoint y exclusión de segu
 
 ---
 
+### Task 12: GimbalLab, la app de banco de pruebas
+
+**Files:**
+- Modify: `Package.swift` (producto portable `GimbalLabSupport`, executable macOS `GimbalLabMac` y dependencias de pruebas)
+- Modify: `Sources/GimbalKitDJI/DUMLFrame.swift` (exponer resultados válidos y fallos CRC desde el parser único)
+- Create: `Sources/GimbalLabSupport/LabModel.swift`, `Sources/GimbalLabSupport/LabCapture.swift`, `Sources/GimbalLabSupport/LabHardwareTestRunner.swift`
+- Create: `Sources/GimbalLabMac/GimbalLabApp.swift`, `scripts/build-lab-mac.sh`, `scripts/check-lab-bundle.sh`
+- Test: `Tests/GimbalKitDJITests/DUMLParserEventTests.swift`, `Tests/GimbalKitDJITests/LabSupportTests.swift`
+
+**Interfaces:**
+- Consumes: `OMTransport`, `OMDevice`, `PoseFeedbackDevice`, `RuntimeClock`, `GimbalController`, `GotoNavigator`, `ZoneStore`, `HostInstanceLock`, `SimGimbal`, `LaggedPoseDevice`, `Real.yawA`, `Real.battery` y `realBytes(_:)` actuales.
+- Produces: `DUMLParser.feedEvents(_:) -> [DUMLParseResult]`; `LabLink: OMTransport`; `LabModel.init(store: ZoneStore, clock: RuntimeClock = .live)`, `connect(using: any LabLink) async`, `reconnect(makeLink: @Sendable () -> any LabLink) async`, `disconnect() async`, `refresh() async`, `startRecording(at:) async throws`, `stopRecording() async`, `setPhase(_:) async`, `confirmReference() async`, `startManual(axis:direction:speed:)`, `endManual() async`, `go(to:) async`, `stopAll() async`, `runAllTests() async`, `exportReport(to:) throws`; `LabHardwareTestRunner.init(transport: any OMTransport, device: any PoseFeedbackDevice, controller: GimbalController, navigator: GotoNavigator, store: ZoneStore, frames: LabFrameBuffer, battery: @escaping @Sendable () async -> LabBattery?, clock: RuntimeClock = .live)`, `setReferenceConfirmed(_:)`, `run(_:) async -> LabTestResult`, `runAll() async -> [LabTestResult]`; `LabCaptureReader.read(_:) throws -> [LabCaptureRecord]`.
+- `GimbalLabSupport` solo importa Foundation, Observation, `GimbalKit` y `GimbalKitDJI`; no importa AppKit, SwiftUI ni CoreBluetooth. `LabModel` recibe un enlace que implementa el `OMTransport` real; la app crea el enlace tras obtener `HostInstanceLock`. Persiste zonas con `ZoneStore`, limita el mando manual a 12 °/s y delega cada SPEED, STOP y navegación en `GimbalController`/`GotoNavigator`; no crea una segunda política de seguridad.
+- El transporte observado consume una sola vez el stream BLE, bifurca notificaciones al `OMDevice` y resultados CRC al modelo, y conserva `commandSet`, `command`, carga y bytes hexadecimales. Pausar congela la lista visual, no el parser ni los contadores. El historial de pose conserva solo 30 s y el anillo de tramas está limitado a 2048.
+- Si falla CRC8, el parser emite solo los cuatro bytes de cabecera como candidato inválido y descarta un byte de sincronía: la longitud todavía no es fiable. Si la cabecera es válida pero falla CRC16, registra la trama completa y consume su longitud. Un tamaño con CRC8 válido puede retener el parser hasta completar como máximo la longitud DUML declarada (10 bits).
+- JSONL RX añade `k:"rx"` al formato `{t,fase,crc,hex}` de `captura_guiada.py`; TX usa `{t,fase,k:"tx",yaw,pitch,roll}` en grados/s. `t` es tiempo monotónico desde el inicio. La lectura acepta RX con o sin `k`.
+- Cada prueba comprueba que yaw y pitch estén a ≤10° del origen al inicio y aborta con STOP si la orientación se aleja >45° de la pose inicial. La prueba de yaw usa +10 °/s ×2 s y −10 °/s ×2 s; órdenes separadas ≥0,3 s. Reposo, batería, STOP, zona y hallazgo 0x04/0x57 usan los umbrales del brief. Sin zona permitida guardada, ir a zona se marca OMITIDA.
+
+#### 12a. Lógica portable, telemetría, JSONL y batería de pruebas
+
+- [ ] **Step 1: Escribir las pruebas que fallan y ampliar el manifiesto**
+
+`Package.swift` (fichero completo):
+```swift
+// swift-tools-version: 6.0
+import PackageDescription
+
+var products: [Product] = [
+    .library(name: "GimbalKit", targets: ["GimbalKit"]),
+    .library(name: "GimbalKitSim", targets: ["GimbalKitSim"]),
+    .library(name: "GimbalKitDJI", targets: ["GimbalKitDJI"]),
+    .library(name: "GimbalKitBLE", targets: ["GimbalKitBLE"]),
+    .library(name: "GimbalLabSupport", targets: ["GimbalLabSupport"]),
+]
+var targets: [Target] = [
+    .target(name: "GimbalKit"),
+    .target(name: "GimbalKitSim", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalKitDJI", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalKitBLE", dependencies: ["GimbalKitDJI"]),
+    .target(name: "GimbalLabSupport", dependencies: ["GimbalKit", "GimbalKitDJI"]),
+    .testTarget(name: "GimbalKitTests", dependencies: ["GimbalKit", "GimbalKitSim"]),
+    .testTarget(name: "GimbalKitDJITests", dependencies: ["GimbalKitDJI", "GimbalKit", "GimbalKitSim", "GimbalLabSupport"]),
+]
+#if os(macOS)
+products += [
+    .library(name: "GimbalKitMCP", targets: ["GimbalKitMCP"]),
+    .library(name: "GimbalHostSupport", targets: ["GimbalHostSupport"]),
+    .executable(name: "gimbal", targets: ["GimbalCLI"]),
+    .executable(name: "GimbalHostMac", targets: ["GimbalHostMac"]),
+]
+targets += [
+    .target(name: "GimbalKitMCP", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalHostSupport", dependencies: ["GimbalKit", "GimbalKitDJI", "GimbalKitMCP"]),
+    .executableTarget(name: "GimbalCLI", dependencies: ["GimbalKitMCP"]),
+    .executableTarget(name: "GimbalHostMac", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI", "GimbalKitMCP"]),
+    .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
+    .testTarget(name: "GimbalKitMCPTests", dependencies: ["GimbalKitMCP", "GimbalKit"]),
+    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+]
+#endif
+let package = Package(name: "GimbalKit", platforms: [.macOS(.v14), .iOS(.v17)], products: products, targets: targets)
+```
+
+`Tests/GimbalKitDJITests/DUMLParserEventTests.swift`:
+```swift
+import Testing
+@testable import GimbalKitDJI
+
+@Test func parserReportsValidAndBadCRCFramesWithoutChangingFeed() {
+    var parser = DUMLParser()
+    let bytes = realBytes(Real.yawA)
+    let valid = parser.feedEvents(bytes)
+    #expect(valid.count == 1)
+    #expect(valid[0].crcValid)
+    #expect(valid[0].frame?.commandSet == 0x04)
+    #expect(valid[0].frame?.command == 0x05)
+    #expect(parser.feed([]) == [])
+    var damaged = realBytes(Real.yawA)
+    damaged[damaged.count - 1] ^= 0x01
+    let invalid = parser.feedEvents(damaged)
+    #expect(invalid.count == 1)
+    #expect(!invalid[0].crcValid)
+    #expect(invalid[0].frame == nil)
+    #expect(invalid[0].rawBytes == damaged)
+    #expect(invalid[0].commandSet == 0x04)
+    #expect(invalid[0].command == 0x05)
+    var badHeader = realBytes(Real.yawA)
+    badHeader[3] ^= 0x01
+    let headerResult = parser.feedEvents(badHeader)
+    #expect(headerResult.count == 1)
+    #expect(!headerResult[0].crcValid)
+    #expect(headerResult[0].rawBytes == Array(badHeader.prefix(4)))
+    let recovered = parser.feedEvents(bytes)
+    #expect(recovered.count == 1)
+    #expect(recovered[0].crcValid)
+    #expect(recovered[0].rawBytes == bytes)
+}
+```
+
+`Tests/GimbalKitDJITests/LabSupportTests.swift`:
+```swift
+import Foundation
+import Testing
+import GimbalKit
+import GimbalKitDJI
+import GimbalKitSim
+@testable import GimbalLabSupport
+
+private final class FakeLabLink: LabLink, @unchecked Sendable {
+    let notifications: AsyncStream<[UInt8]>
+    let disconnects: AsyncStream<Void>
+    private let notificationContinuation: AsyncStream<[UInt8]>.Continuation
+    private let disconnectContinuation: AsyncStream<Void>.Continuation
+    private let lock = NSLock()
+    private let now: @Sendable () -> Date
+    private var writeHistory: [(Date, [UInt8])] = []
+    var bluetoothAuthorization: LabBluetoothAuthorization { .allowed }
+    init(now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+        let n = AsyncStream.makeStream(of: [UInt8].self)
+        notifications = n.stream; notificationContinuation = n.continuation
+        let d = AsyncStream.makeStream(of: Void.self)
+        disconnects = d.stream; disconnectContinuation = d.continuation
+    }
+    func connect() async throws {}
+    func disconnect() async { disconnectContinuation.yield(()); disconnectContinuation.finish() }
+    func write(_ bytes: [UInt8]) async throws { lock.withLock { writeHistory.append((now(), bytes)) } }
+    func emit(_ bytes: [UInt8]) { notificationContinuation.yield(bytes) }
+    func writes() -> [(Date, [UInt8])] { lock.withLock { writeHistory } }
+}
+
+private func waitUntil(_ condition: @escaping @Sendable () async -> Bool) async throws {
+    for _ in 0..<1000 {
+        if await condition() { return }
+        await Task.yield()
+    }
+    Issue.record("La condición no llegó a cumplirse")
+}
+
+private actor SimPoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback, .battery]
+    private let simulator: SimGimbal
+    private let clock: ManualClock
+    private var sequence: UInt64 = 0
+    private var elapsed = 0.0
+    private var lastReceived: Date
+    init(simulator: SimGimbal, clock: ManualClock) { self.simulator = simulator; self.clock = clock; lastReceived = clock.now() }
+    func advance(_ seconds: Double) async {
+        await simulator.advance(seconds: seconds)
+        clock.advance(seconds)
+        elapsed += seconds
+        while elapsed >= 0.5 { elapsed -= 0.5; sequence &+= 1; lastReceived = clock.now() }
+    }
+    func send(_ command: MoveCommand) async throws { try await simulator.send(command) }
+    func currentPose() async -> Pose? { await simulator.currentPose() }
+    func poseSample() async -> PoseSample? {
+        guard let pose = await simulator.currentPose() else { return nil }
+        return PoseSample(pose: pose, receivedAt: lastReceived, sequence: sequence)
+    }
+}
+
+private actor ImmobilePoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback]
+    private let simulator: SimGimbal
+    private let clock: ManualClock
+    private var sequence: UInt64 = 0
+    init(simulator: SimGimbal, clock: ManualClock) { self.simulator = simulator; self.clock = clock }
+    func send(_ command: MoveCommand) async throws {}
+    func currentPose() async -> Pose? { await simulator.currentPose() }
+    func poseSample() async -> PoseSample? {
+        sequence &+= 1
+        return PoseSample(pose: await simulator.currentPose() ?? Pose(), receivedAt: clock.now(), sequence: sequence)
+    }
+}
+
+private actor FrozenPoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback]
+    private let frozen: Pose
+    private let clock: ManualClock
+    init(pose: Pose, clock: ManualClock) { frozen = pose; self.clock = clock }
+    func send(_ command: MoveCommand) async throws {}
+    func currentPose() -> Pose? { frozen }
+    func poseSample() -> PoseSample? { PoseSample(pose: frozen, receivedAt: clock.now(), sequence: 1) }
+}
+
+private actor DriftingPoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback]
+    private var pose = Pose()
+    private let clock: ManualClock
+    private var sequence: UInt64 = 0
+    init(clock: ManualClock) { self.clock = clock }
+    func send(_ command: MoveCommand) async throws {}
+    func currentPose() -> Pose? { pose.yaw += 0.01; return pose }
+    func poseSample() -> PoseSample? {
+        sequence += 1; pose.yaw += 0.01
+        return PoseSample(pose: pose, receivedAt: clock.now(), sequence: sequence)
+    }
+}
+
+private actor NonStoppingPoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback]
+    private let clock: ManualClock
+    private var origin = Date()
+    private var velocity = 0.0
+    private var sequence: UInt64 = 0
+    init(clock: ManualClock) { self.clock = clock; origin = clock.now() }
+    func send(_ command: MoveCommand) async throws {
+        if case let .speed(yaw, _, _) = command { velocity = yaw; origin = clock.now() }
+    }
+    func currentPose() -> Pose? { Pose(yaw: velocity * clock.now().timeIntervalSince(origin)) }
+    func poseSample() -> PoseSample? {
+        sequence += 1
+        return PoseSample(pose: currentPose() ?? Pose(), receivedAt: clock.now(), sequence: sequence)
+    }
+}
+
+private actor RunawayPoseFeedbackDevice: PoseFeedbackDevice {
+    nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback]
+    private let clock: ManualClock
+    private var sequence: UInt64 = 0
+    private var samples = 0
+    private var stops = 0
+    init(clock: ManualClock) { self.clock = clock }
+    func send(_ command: MoveCommand) async throws { if command == .stop { stops += 1 } }
+    func currentPose() -> Pose? { Pose(yaw: 50) }
+    func poseSample() -> PoseSample? {
+        sequence += 1; samples += 1
+        return PoseSample(pose: Pose(yaw: samples == 1 ? 0 : 50), receivedAt: clock.now(), sequence: sequence)
+    }
+    func stopCount() -> Int { stops }
+}
+
+@Test func captureJSONLRoundTripsResearchRXAndTX() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("session.jsonl")
+    let clock = ManualClock(Date(timeIntervalSince1970: 100))
+    let recorder = LabSessionRecorder(clock: RuntimeClock(now: { clock.now() }, sleep: { _ in }))
+    try await recorder.start(at: url)
+    await recorder.setPhase("quieta")
+    try await recorder.recordRX(hex: Real.yawA, crc: true)
+    clock.advance(0.3)
+    try await recorder.recordTX(yaw: 10, pitch: 0, roll: 0)
+    try await recorder.stop()
+    let records = try LabCaptureReader.read(Data(contentsOf: url))
+    let lines = String(decoding: try Data(contentsOf: url), as: UTF8.self).split(whereSeparator: \.isNewline)
+    #expect(records.count == 2)
+    #expect(records[0].fase == "quieta" && records[0].k == "rx" && records[0].crc == true)
+    #expect(records[0].hex == Real.yawA)
+    #expect(records[1].k == "tx" && records[1].yaw == 10 && records[1].pitch == 0 && records[1].roll == 0)
+    let rxJSON = try #require(JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any])
+    let txJSON = try #require(JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any])
+    #expect(Set(rxJSON.keys) == Set(["t", "fase", "k", "crc", "hex"]))
+    #expect(Set(txJSON.keys) == Set(["t", "fase", "k", "yaw", "pitch", "roll"]))
+    let legacy = Data("{\"t\":0.1,\"fase\":\"pre\",\"crc\":true,\"hex\":\"abc\"}\n".utf8)
+    #expect(try LabCaptureReader.read(legacy).first?.k == nil)
+}
+
+@Test @MainActor func modelCountsAndFiltersWhilePauseOnlyFreezesRows() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let clock = ManualClock()
+    let model = LabModel(store: ZoneStore(url: directory.appendingPathComponent("zones.json")),
+        clock: RuntimeClock(now: { clock.now() }, sleep: { seconds in
+            if seconds >= 0.29 { clock.advance(seconds) }
+            try await Task.sleep(for: .milliseconds(1))
+        }))
+    let link = FakeLabLink(now: { clock.now() })
+    await model.connect(using: link)
+    #expect(model.connection == .connected)
+    link.emit(realBytes(Real.yawA))
+    try await waitUntil { await MainActor.run { model.validFrameCount == 1 } }
+    try await waitUntil { await MainActor.run { model.pose != nil } }
+    clock.advance(1)
+    link.emit(realBytes(Real.yawA))
+    try await waitUntil { await MainActor.run { model.validFrameCount == 2 && model.updateHz > 0 } }
+    #expect(abs(model.updateHz - 1) < 0.01)
+    #expect((model.poseAgeSeconds ?? 10) < 0.1)
+    link.emit(realBytes(Real.battery))
+    try await waitUntil { await MainActor.run { model.validFrameCount == 3 && model.battery?.percent == 25 } }
+    model.commandSetFilter = "04"; model.commandFilter = "05"
+    #expect(model.visibleFrames.count == 2)
+    model.isFrameListPaused = true
+    let shown = model.frames.count
+    var damaged = realBytes(Real.yawA); damaged[damaged.count - 1] ^= 1
+    link.emit(damaged)
+    try await waitUntil { await MainActor.run { model.invalidFrameCount == 1 } }
+    #expect(model.frames.count == shown && model.invalidFrameCount == 1)
+    model.startManual(axis: .yaw, direction: 1, speed: 12)
+    try await waitUntil { link.writes().count >= 2 }
+    await model.endManual()
+    let writes = link.writes()
+    let stop = OMRotate(yaw: 0, pitch: 0, roll: 0, time: 10, mode: .speed).frame().encoded()
+    #expect(writes.count >= 3 && writes.last?.1 == stop)
+    if writes.count >= 3 {
+        for index in 1..<(writes.count - 1) {
+            #expect(writes[index].0.timeIntervalSince(writes[index - 1].0) >= 0.3)
+        }
+    }
+    await model.disconnect()
+}
+
+@Test func hardwareRunnerUsesSimulatorsForPassAndFailureCases() async throws {
+    let clock = ManualClock()
+    let simulator = SimGimbal(pose: Pose())
+    let device = SimPoseFeedbackDevice(simulator: simulator, clock: clock)
+    let liveClock = RuntimeClock(now: { clock.now() }, sleep: { seconds in await device.advance(seconds) })
+    let policy = SafetyPolicy(maxSpeed: 12, maxLeaseSeconds: 30, deadmanSeconds: 1,
+        zones: [Zone(name: "banco", yaw: -60...60, pitch: -45...45)])
+    let controller = GimbalController(device: device, policy: policy, now: { clock.now() })
+    let link = FakeLabLink(); let buffer = LabFrameBuffer()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ZoneStore(url: directory.appendingPathComponent("zones.json"))
+    try await store.save([Zone(name: "banco", yaw: -60...60, pitch: -45...45)])
+    let runner = LabHardwareTestRunner(transport: link, device: device, controller: controller,
+        navigator: GotoNavigator(controller: controller, clock: liveClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    #expect(await runner.run(.connectionTelemetry).status == .passed)
+    #expect(await runner.run(.restStability).status == .passed)
+    #expect(await runner.run(.battery).status == .passed)
+    #expect(await runner.run(.yawMovement).status == .passed)
+    #expect(await runner.run(.stop).status == .passed)
+    #expect(await simulator.commands.contains(.stop))
+    await runner.setReferenceConfirmed(true)
+    #expect(await runner.run(.zoneGoto).status == .passed)
+    let constant = DUMLFrame(sender: 4, receiver: 2, sequence: 1, commandType: 0,
+        commandSet: 0x04, command: 0x57, payload: [0, 0, 0])
+    for index in 0..<3 {
+        let event = DUMLParseResult(rawBytes: constant.encoded(), frame: constant, crcValid: true)
+        await buffer.append(LabFrameEvent(result: event, receivedAt: clock.now().addingTimeInterval(Double(index) / 10)))
+    }
+    #expect(await runner.run(.constantTelemetry).status == .passed)
+    let immobileSim = SimGimbal()
+    let immobile = ImmobilePoseFeedbackDevice(simulator: immobileSim, clock: clock)
+    let deadController = GimbalController(device: immobile, policy: policy, now: { clock.now() })
+    let deadRunner = LabHardwareTestRunner(transport: link, device: immobile, controller: deadController,
+        navigator: GotoNavigator(controller: deadController, clock: liveClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    #expect(await deadRunner.run(.yawMovement).status == .failed)
+    let drifting = DriftingPoseFeedbackDevice(clock: clock)
+    let driftController = GimbalController(device: drifting, policy: policy, now: { clock.now() })
+    let driftRunner = LabHardwareTestRunner(transport: link, device: drifting, controller: driftController,
+        navigator: GotoNavigator(controller: driftController, clock: liveClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    #expect(await driftRunner.run(.restStability).status == .failed)
+    let noBatteryRunner = LabHardwareTestRunner(transport: link, device: device, controller: controller,
+        navigator: GotoNavigator(controller: controller, clock: liveClock), store: store, frames: buffer,
+        battery: { nil }, clock: liveClock)
+    #expect(await noBatteryRunner.run(.battery).status == .failed)
+    let noStop = NonStoppingPoseFeedbackDevice(clock: clock)
+    let noStopController = GimbalController(device: noStop, policy: policy, now: { clock.now() })
+    let noStopRunner = LabHardwareTestRunner(transport: link, device: noStop, controller: noStopController,
+        navigator: GotoNavigator(controller: noStopController, clock: liveClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    #expect(await noStopRunner.run(.stop).status == .failed)
+    let frozen = FrozenPoseFeedbackDevice(pose: Pose(), clock: clock)
+    let frozenController = GimbalController(device: frozen, policy: policy, now: { clock.now() })
+    let emptyBuffer = LabFrameBuffer()
+    let frozenRunner = LabHardwareTestRunner(transport: link, device: frozen, controller: frozenController,
+        navigator: GotoNavigator(controller: frozenController, clock: liveClock), store: store, frames: emptyBuffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    #expect(await frozenRunner.run(.connectionTelemetry).status == .failed)
+    #expect(await frozenRunner.run(.constantTelemetry).status == .failed)
+    await frozenRunner.setReferenceConfirmed(true)
+    #expect(await frozenRunner.run(.zoneGoto).status == .failed)
+
+    let lagged = LaggedPoseDevice(clock: clock)
+    let laggedClock = RuntimeClock(now: { clock.now() }, sleep: { seconds in await lagged.advance(seconds) })
+    let laggedController = GimbalController(device: lagged, policy: policy, now: { clock.now() })
+    let laggedRunner = LabHardwareTestRunner(transport: link, device: lagged, controller: laggedController,
+        navigator: GotoNavigator(controller: laggedController, clock: laggedClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: laggedClock)
+    await laggedRunner.setReferenceConfirmed(true)
+    #expect(await laggedRunner.run(.zoneGoto).status == .passed)
+    let runaway = RunawayPoseFeedbackDevice(clock: clock)
+    let runawayController = GimbalController(device: runaway, policy: policy, now: { clock.now() })
+    let runawayRunner = LabHardwareTestRunner(transport: link, device: runaway, controller: runawayController,
+        navigator: GotoNavigator(controller: runawayController, clock: liveClock), store: store, frames: buffer,
+        battery: { LabBattery(percent: 25, charging: false) }, clock: liveClock)
+    let aborted = await runawayRunner.run(.restStability)
+    #expect(aborted.status == .failed && aborted.summary.contains(">45°"))
+    #expect(await runaway.stopCount() > 0)
+}
+```
+
+Run: `CLANG_MODULE_CACHE_PATH=$PWD/.build/modcache timeout 300 swift test --disable-sandbox --scratch-path .build --filter 'parserReportsValidAndBadCRCFramesWithoutChangingFeed|captureJSONLRoundTripsResearchRXAndTX|modelCountsAndFiltersWhilePauseOnlyFreezesRows|hardwareRunnerUsesSimulatorsForPassAndFailureCases'`
+Expected: fallos de compilación por `feedEvents`, el módulo y sus tipos aún ausentes. Los tests usan enlaces falsos, nunca CoreBluetooth.
+
+- [ ] **Step 2: Ejecutar y comprobar que falla**
+
+Run: `CLANG_MODULE_CACHE_PATH=$PWD/.build/modcache timeout 300 swift test --disable-sandbox --scratch-path .build --filter 'parserReportsValidAndBadCRCFramesWithoutChangingFeed|captureJSONLRoundTripsResearchRXAndTX|modelCountsAndFiltersWhilePauseOnlyFreezesRows|hardwareRunnerUsesSimulatorsForPassAndFailureCases'`
+Expected: falla por las interfaces nuevas ausentes; conservar el fallo como prueba roja.
+
+- [ ] **Step 3: Implementar**
+
+`Sources/GimbalKitDJI/DUMLFrame.swift` (sustituir fichero):
+```swift
+public struct DUMLFrame: Sendable, Equatable {
+    public var sender: UInt8
+    public var receiver: UInt8
+    public var sequence: UInt16
+    public var commandType: UInt8
+    public var commandSet: UInt8
+    public var command: UInt8
+    public var payload: [UInt8]
+    public init(sender: UInt8, receiver: UInt8, sequence: UInt16, commandType: UInt8,
+                commandSet: UInt8, command: UInt8, payload: [UInt8]) {
+        self.sender = sender; self.receiver = receiver; self.sequence = sequence
+        self.commandType = commandType; self.commandSet = commandSet; self.command = command; self.payload = payload
+    }
+    public func encoded() -> [UInt8] {
+        let total = 11 + payload.count + 2
+        var out: [UInt8] = [0x55, UInt8(total & 0xFF), UInt8((total >> 8) & 0x03) | 0x04]
+        out.append(DUMLCRC.crc8(out[0..<3]))
+        out += [sender, receiver, UInt8(sequence & 0xFF), UInt8(sequence >> 8), commandType, commandSet, command]
+        out += payload
+        let crc = DUMLCRC.crc16(out[0...])
+        out += [UInt8(crc & 0xFF), UInt8(crc >> 8)]
+        return out
+    }
+}
+
+public struct DUMLParseResult: Sendable, Equatable {
+    public let rawBytes: [UInt8]
+    public let frame: DUMLFrame?
+    public let crcValid: Bool
+    public init(rawBytes: [UInt8], frame: DUMLFrame?, crcValid: Bool) {
+        self.rawBytes = rawBytes; self.frame = frame; self.crcValid = crcValid
+    }
+    public var commandSet: UInt8? { frame?.commandSet ?? (rawBytes.count > 9 ? rawBytes[9] : nil) }
+    public var command: UInt8? { frame?.command ?? (rawBytes.count > 10 ? rawBytes[10] : nil) }
+}
+
+public struct DUMLParser {
+    private var buffer: [UInt8] = []
+    public init() {}
+    public mutating func feed(_ data: [UInt8]) -> [DUMLFrame] {
+        feedEvents(data).compactMap(\.frame)
+    }
+    public mutating func feedEvents(_ data: [UInt8]) -> [DUMLParseResult] {
+        buffer += data
+        var results: [DUMLParseResult] = []
+        while true {
+            guard let start = buffer.firstIndex(of: 0x55) else { buffer.removeAll(); break }
+            if start > 0 { buffer.removeFirst(start) }
+            guard buffer.count >= 4 else { break }
+            guard DUMLCRC.crc8(buffer[0..<3]) == buffer[3] else {
+                results.append(DUMLParseResult(rawBytes: Array(buffer.prefix(4)), frame: nil, crcValid: false))
+                buffer.removeFirst()
+                continue
+            }
+            let total = Int(buffer[1]) | (Int(buffer[2] & 0x03) << 8)
+            guard total >= 13 else {
+                results.append(DUMLParseResult(rawBytes: Array(buffer.prefix(4)), frame: nil, crcValid: false))
+                buffer.removeFirst()
+                continue
+            }
+            guard buffer.count >= total else { break }
+            let raw = Array(buffer[0..<total])
+            let expected = UInt16(raw[total - 2]) | (UInt16(raw[total - 1]) << 8)
+            guard DUMLCRC.crc16(raw[0..<(total - 2)]) == expected else {
+                results.append(DUMLParseResult(rawBytes: raw, frame: nil, crcValid: false))
+                buffer.removeFirst(total)
+                continue
+            }
+            let frame = DUMLFrame(sender: raw[4], receiver: raw[5],
+                sequence: UInt16(raw[6]) | (UInt16(raw[7]) << 8), commandType: raw[8],
+                commandSet: raw[9], command: raw[10], payload: Array(raw[11..<(total - 2)]))
+            results.append(DUMLParseResult(rawBytes: raw, frame: frame, crcValid: true))
+            buffer.removeFirst(total)
+        }
+        return results
+    }
+}
+```
+
+`Sources/GimbalLabSupport/LabCapture.swift`:
+```swift
+import Foundation
+import GimbalKit
+
+public struct LabCaptureRecord: Codable, Sendable, Equatable {
+    public let t: Double
+    public let fase: String
+    public let k: String?
+    public let crc: Bool?
+    public let hex: String?
+    public let yaw: Double?
+    public let pitch: Double?
+    public let roll: Double?
+    public init(t: Double, fase: String, k: String? = nil, crc: Bool? = nil, hex: String? = nil,
+                yaw: Double? = nil, pitch: Double? = nil, roll: Double? = nil) {
+        self.t = t; self.fase = fase; self.k = k; self.crc = crc; self.hex = hex
+        self.yaw = yaw; self.pitch = pitch; self.roll = roll
+    }
+}
+
+public enum LabCaptureReader {
+    public static func read(_ data: Data) throws -> [LabCaptureRecord] {
+        let decoder = JSONDecoder()
+        return try data.split(separator: 0x0A).map { try decoder.decode(LabCaptureRecord.self, from: Data($0)) }
+    }
+}
+
+public actor LabSessionRecorder {
+    private let clock: RuntimeClock
+    private var startedAt: Date?
+    private var phase = "pre"
+    private var handle: FileHandle?
+    public init(clock: RuntimeClock = .live) { self.clock = clock }
+    public func start(at url: URL) throws {
+        try stop()
+        try Data().write(to: url, options: .atomic)
+        handle = try FileHandle(forWritingTo: url)
+        startedAt = clock.now()
+    }
+    public func setPhase(_ value: String) {
+        let clean = String(value.trimmingCharacters(in: .whitespacesAndNewlines).filter { !$0.isNewline && $0 >= " " }.prefix(64))
+        phase = clean.isEmpty ? "sin-fase" : clean
+    }
+    public func recordRX(hex: String, crc: Bool) throws {
+        try append(LabCaptureRecord(t: elapsed, fase: phase, k: "rx", crc: crc, hex: hex))
+    }
+    public func recordTX(yaw: Double, pitch: Double, roll: Double) throws {
+        try append(LabCaptureRecord(t: elapsed, fase: phase, k: "tx", yaw: yaw, pitch: pitch, roll: roll))
+    }
+    public func stop() throws {
+        try handle?.synchronize()
+        try handle?.close()
+        handle = nil; startedAt = nil
+    }
+    private var elapsed: Double { max(0, startedAt.map { clock.now().timeIntervalSince($0) } ?? 0) }
+    private func append(_ record: LabCaptureRecord) throws {
+        guard let handle else { return }
+        var data = try JSONEncoder().encode(record)
+        data.append(0x0A)
+        try handle.write(contentsOf: data)
+    }
+}
+```
+
+`Sources/GimbalLabSupport/LabModel.swift`:
+```swift
+import Foundation
+import Observation
+import GimbalKit
+import GimbalKitDJI
+
+public enum LabBluetoothAuthorization: Sendable, Equatable { case notDetermined, allowed, denied, restricted, unavailable }
+public enum LabConnection: Sendable, Equatable { case disconnected, connecting, connected }
+public protocol LabLink: OMTransport {
+    var bluetoothAuthorization: LabBluetoothAuthorization { get }
+    var disconnects: AsyncStream<Void> { get }
+    func connect() async throws
+    func disconnect() async
+}
+public struct LabBattery: Sendable, Equatable {
+    public let percent: Int
+    public let charging: Bool
+    public init(percent: Int, charging: Bool) { self.percent = percent; self.charging = charging }
+}
+public struct LabFrameEvent: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let receivedAt: Date
+    public let commandSet: UInt8?
+    public let command: UInt8?
+    public let payload: [UInt8]?
+    public let crcValid: Bool
+    public let hex: String
+    public init(result: DUMLParseResult, receivedAt: Date) {
+        id = UUID(); self.receivedAt = receivedAt
+        commandSet = result.commandSet; command = result.command
+        payload = result.frame?.payload; crcValid = result.crcValid
+        hex = result.rawBytes.map { String(format: "%02x", $0) }.joined()
+    }
+}
+public struct LabPosePoint: Sendable, Identifiable {
+    public let id: UInt64
+    public let date: Date
+    public let pose: Pose
+    public init(id: UInt64, date: Date, pose: Pose) { self.id = id; self.date = date; self.pose = pose }
+}
+public enum LabAxis: Sendable, Equatable { case yaw, pitch }
+
+public actor LabFrameBuffer {
+    private var rows: [LabFrameEvent] = []
+    private var valid = 0
+    private var invalid = 0
+    public init() {}
+    public func append(_ frame: LabFrameEvent) {
+        if frame.crcValid { valid += 1 } else { invalid += 1 }
+        rows.append(frame)
+        if rows.count > 2048 { rows.removeFirst(rows.count - 2048) }
+    }
+    public func snapshot() -> (rows: [LabFrameEvent], valid: Int, invalid: Int) { (rows, valid, invalid) }
+    public func constantTelemetry() -> [LabFrameEvent] {
+        rows.filter { $0.crcValid && $0.commandSet == 0x04 && $0.command == 0x57 }
+    }
+}
+
+public final class LabObservedTransport: OMTransport, @unchecked Sendable {
+    public let notifications: AsyncStream<[UInt8]>
+    public let frameEvents: AsyncStream<LabFrameEvent>
+    private let base: any OMTransport
+    private let pump: Task<Void, Never>
+    public init(base: any OMTransport, now: @escaping @Sendable () -> Date) {
+        self.base = base
+        let n = AsyncStream.makeStream(of: [UInt8].self)
+        let f = AsyncStream.makeStream(of: LabFrameEvent.self)
+        notifications = n.stream; frameEvents = f.stream
+        pump = Task {
+            var parser = DUMLParser()
+            for await chunk in base.notifications {
+                guard !Task.isCancelled else { break }
+                n.continuation.yield(chunk)
+                for result in parser.feedEvents(chunk) { f.continuation.yield(LabFrameEvent(result: result, receivedAt: now())) }
+            }
+            n.continuation.finish(); f.continuation.finish()
+        }
+    }
+    public func write(_ bytes: [UInt8]) async throws { try await base.write(bytes) }
+    deinit { pump.cancel() }
+}
+
+public actor LabRecordingDevice: PoseFeedbackDevice {
+    public nonisolated let capabilities: Capabilities = [.speedControl, .poseFeedback, .battery]
+    private let device: OMDevice
+    private let recorder: LabSessionRecorder
+    public init(device: OMDevice, recorder: LabSessionRecorder) { self.device = device; self.recorder = recorder }
+    public func currentPose() async -> Pose? { await device.currentPose() }
+    public func poseSample() async -> PoseSample? { await device.poseSample() }
+    public func send(_ command: MoveCommand) async throws {
+        try await device.send(command)
+        switch command {
+        case let .speed(yaw, pitch, roll): try await recorder.recordTX(yaw: yaw, pitch: pitch, roll: roll)
+        case .stop: try await recorder.recordTX(yaw: 0, pitch: 0, roll: 0)
+        case .absolute: break
+        }
+    }
+}
+
+@MainActor @Observable public final class LabModel {
+    public private(set) var authorization: LabBluetoothAuthorization = .notDetermined
+    public private(set) var connection: LabConnection = .disconnected
+    public private(set) var errorMessage: String?
+    public private(set) var pose: Pose?
+    public private(set) var poseAgeSeconds: Double?
+    public private(set) var updateHz = 0.0
+    public private(set) var battery: LabBattery?
+    public private(set) var poseHistory: [LabPosePoint] = []
+    public private(set) var zones: [Zone] = []
+    public private(set) var referenceConfirmed = false
+    public private(set) var frames: [LabFrameEvent] = []
+    public private(set) var validFrameCount = 0
+    public private(set) var invalidFrameCount = 0
+    public private(set) var testResults: [LabTestResult] = []
+    public var commandSetFilter = ""
+    public var commandFilter = ""
+    public var isFrameListPaused = false
+    public var phase = "pre"
+    @ObservationIgnored private let store: ZoneStore
+    @ObservationIgnored private let clock: RuntimeClock
+    @ObservationIgnored private let frameBuffer = LabFrameBuffer()
+    @ObservationIgnored private var link: (any LabLink)?
+    @ObservationIgnored private var transport: LabObservedTransport?
+    @ObservationIgnored private var device: OMDevice?
+    @ObservationIgnored private var recordingDevice: LabRecordingDevice?
+    @ObservationIgnored private var recorder = LabSessionRecorder()
+    @ObservationIgnored private var controller: GimbalController?
+    @ObservationIgnored private var navigator: GotoNavigator?
+    @ObservationIgnored private var runner: LabHardwareTestRunner?
+    @ObservationIgnored private var frameTask: Task<Void, Never>?
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var disconnectTask: Task<Void, Never>?
+    @ObservationIgnored private var manualTask: Task<Void, Never>?
+    @ObservationIgnored private var testTask: Task<Void, Never>?
+    @ObservationIgnored private var navigationTask: Task<Void, Never>?
+    @ObservationIgnored private var poseDates: [Date] = []
+    @ObservationIgnored private var lastSequence: UInt64?
+    @ObservationIgnored private var session = UUID()
+
+    public init(store: ZoneStore, clock: RuntimeClock = .live) { self.store = store; self.clock = clock }
+    public var authorizationText: String {
+        switch authorization {
+        case .notDetermined: "Sin decidir"
+        case .allowed: "Permitido"
+        case .denied: "Denegado"
+        case .restricted: "Restringido"
+        case .unavailable: "No disponible"
+        }
+    }
+    public var connectionText: String {
+        switch connection {
+        case .disconnected: "Desconectado"
+        case .connecting: "Conectando"
+        case .connected: "Conectado"
+        }
+    }
+    public var firstAllowedZoneName: String? { zones.first(where: { !$0.forbidden })?.name }
+    public var visibleFrames: [LabFrameEvent] {
+        let set = commandSetFilter.isEmpty ? nil : UInt8(commandSetFilter, radix: 16)
+        let command = commandFilter.isEmpty ? nil : UInt8(commandFilter, radix: 16)
+        if !commandSetFilter.isEmpty && set == nil { return [] }
+        if !commandFilter.isEmpty && command == nil { return [] }
+        return frames.filter { frame in
+            return (commandSetFilter.isEmpty || frame.commandSet == set) && (commandFilter.isEmpty || frame.command == command)
+        }
+    }
+
+    public func connect(using newLink: any LabLink) async {
+        guard connection == .disconnected else { return }
+        let id = UUID(); session = id; link = newLink
+        authorization = newLink.bluetoothAuthorization; connection = .connecting; errorMessage = nil
+        do {
+            zones = try await store.load()
+            try await newLink.connect()
+            guard session == id else { await newLink.disconnect(); return }
+            let observed = LabObservedTransport(base: newLink, now: clock.now)
+            let device = OMDevice(transport: observed, now: clock.now)
+            let recorded = LabRecordingDevice(device: device, recorder: recorder)
+            let controller = GimbalController(device: recorded,
+                policy: SafetyPolicy(maxSpeed: 12, maxLeaseSeconds: 30, deadmanSeconds: 0.75, zones: zones), now: clock.now)
+            let navigator = GotoNavigator(controller: controller, clock: clock)
+            self.transport = observed; self.device = device; self.controller = controller
+            self.navigator = navigator; recordingDevice = recorded
+            runner = LabHardwareTestRunner(transport: observed, device: recorded, controller: controller,
+                navigator: navigator, store: store, frames: frameBuffer,
+                battery: { await device.battery.map { LabBattery(percent: $0.percent, charging: $0.charging) } }, clock: clock)
+            await runner?.setReferenceConfirmed(zones.isEmpty)
+            await device.start(); connection = .connected; referenceConfirmed = zones.isEmpty
+            frameTask = Task { [weak self, stream = observed.frameEvents] in
+                for await frame in stream {
+                    guard !Task.isCancelled else { break }
+                    await self?.receive(frame)
+                }
+            }
+            refreshTask = Task { [weak self, clock] in
+                while !Task.isCancelled {
+                    await self?.refresh()
+                    do { try await clock.sleep(0.1) } catch { break }
+                }
+            }
+            disconnectTask = Task { [weak self, stream = newLink.disconnects] in
+                for await _ in stream { await self?.connectionLost(id); break }
+            }
+        } catch {
+            if session == id {
+                authorization = newLink.bluetoothAuthorization
+                connection = .disconnected; errorMessage = String(describing: error); self.link = nil
+            }
+            await newLink.disconnect()
+        }
+    }
+    public func reconnect(makeLink: @Sendable () -> any LabLink) async {
+        await disconnect(); await connect(using: makeLink())
+    }
+    public func disconnect() async {
+        let old = link
+        await stopAll()
+        session = UUID()
+        frameTask?.cancel(); refreshTask?.cancel(); disconnectTask?.cancel()
+        frameTask = nil; refreshTask = nil; disconnectTask = nil
+        if let device { await device.shutdown() }
+        try? await recorder.stop()
+        await old?.disconnect()
+        link = nil; transport = nil; device = nil; recordingDevice = nil; controller = nil; navigator = nil; runner = nil
+        connection = .disconnected; pose = nil; poseAgeSeconds = nil; battery = nil; referenceConfirmed = false
+    }
+    private func connectionLost(_ id: UUID) async {
+        guard session == id else { return }
+        session = UUID(); frameTask?.cancel(); refreshTask?.cancel()
+        manualTask?.cancel(); manualTask = nil; testTask?.cancel(); testTask = nil
+        navigationTask?.cancel(); navigationTask = nil
+        if let controller { await controller.deviceDisconnected() }
+        if let device { await device.shutdown() }
+        try? await recorder.stop()
+        await link?.disconnect()
+        link = nil; transport = nil; device = nil; recordingDevice = nil; controller = nil; navigator = nil; runner = nil
+        connection = .disconnected; pose = nil; poseAgeSeconds = nil; battery = nil; referenceConfirmed = false
+    }
+    public func refresh() async {
+        if let link { authorization = link.bluetoothAuthorization }
+        await controller?.tick()
+        guard let device else { return }
+        if let sample = await device.poseSample() {
+            let age = clock.now().timeIntervalSince(sample.receivedAt)
+            poseAgeSeconds = age >= 0 ? age : nil
+            pose = age >= 0 && age <= 1.5 ? sample.pose : nil
+            if sample.sequence != lastSequence {
+                lastSequence = sample.sequence; poseDates.append(sample.receivedAt)
+                if poseDates.count > 20 { poseDates.removeFirst(poseDates.count - 20) }
+                if poseDates.count > 1, let first = poseDates.first, let last = poseDates.last {
+                    let span = last.timeIntervalSince(first)
+                    updateHz = span > 0 ? Double(poseDates.count - 1) / span : 0
+                }
+                poseHistory.append(LabPosePoint(id: sample.sequence, date: sample.receivedAt, pose: sample.pose))
+                poseHistory.removeAll { $0.date < clock.now().addingTimeInterval(-30) }
+            }
+        }
+        if let value = await device.battery { battery = LabBattery(percent: value.percent, charging: value.charging) }
+    }
+    private func receive(_ frame: LabFrameEvent) async {
+        await frameBuffer.append(frame)
+        let snapshot = await frameBuffer.snapshot()
+        validFrameCount = snapshot.valid; invalidFrameCount = snapshot.invalid
+        if !isFrameListPaused { frames = snapshot.rows }
+        do { try await recorder.recordRX(hex: frame.hex, crc: frame.crcValid) }
+        catch { errorMessage = "No se pudo escribir la captura JSONL: \(error)" }
+    }
+    public func setPhase(_ value: String) async { phase = value; await recorder.setPhase(value) }
+    public func presentError(_ message: String) { errorMessage = message }
+    public func startRecording(at url: URL) async throws { try await recorder.start(at: url); await recorder.setPhase(phase) }
+    public func stopRecording() async { try? await recorder.stop() }
+    public func confirmReference() async {
+        referenceConfirmed = true
+        await runner?.setReferenceConfirmed(true)
+    }
+    public func startManual(axis: LabAxis, direction: Int, speed: Double) {
+        guard let controller, connection == .connected, speed.isFinite, (0...12).contains(speed), abs(direction) == 1 else { return }
+        manualTask?.cancel()
+        manualTask = Task { [clock] in
+            do {
+                while !Task.isCancelled {
+                    let value = speed * Double(direction)
+                    try await controller.send(axis == .yaw ? .speed(yaw: value, pitch: 0, roll: 0) : .speed(yaw: 0, pitch: value, roll: 0), source: .app)
+                    try await clock.sleep(0.30)
+                }
+            } catch is CancellationError { }
+            catch {
+                await controller.stop(source: .app)
+                await MainActor.run { self.presentError(String(describing: error)) }
+            }
+        }
+    }
+    public func endManual() async {
+        manualTask?.cancel(); manualTask = nil
+        await controller?.stop(source: .app)
+    }
+    public func go(to zoneName: String?) async {
+        guard referenceConfirmed, let zoneName, let controller, let navigator else { return }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performNavigation(to: zoneName, controller: controller, navigator: navigator)
+        }
+        navigationTask = task
+        await task.value
+        navigationTask = nil
+    }
+    private func performNavigation(to zoneName: String, controller: GimbalController, navigator: GotoNavigator) async {
+        do {
+            let lease = try await controller.requestLease(source: .app, zone: zoneName, seconds: 30)
+            do { _ = try await navigator.go(to: zoneName, source: .app, lease: lease); await controller.release(lease: lease) }
+            catch { await controller.release(lease: lease); throw error }
+        } catch { errorMessage = String(describing: error) }
+    }
+    public func runAllTests() async {
+        guard let runner else { return }
+        testResults = []
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            for kind in LabTestKind.allCases {
+                guard !Task.isCancelled, let self else { return }
+                self.testResults.append(await runner.run(kind))
+            }
+        }
+        testTask = task
+        await task.value
+        testTask = nil
+    }
+    public func stopAll() async {
+        manualTask?.cancel(); manualTask = nil; testTask?.cancel(); testTask = nil
+        navigationTask?.cancel(); navigationTask = nil
+        if let runner { await runner.stopAll() } else { await controller?.stop(source: .app) }
+    }
+    public func exportReport(to url: URL) throws {
+        try LabReport.markdown(results: testResults, date: clock.now()).write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+```
+
+`Sources/GimbalLabSupport/LabHardwareTestRunner.swift`:
+```swift
+import Foundation
+import GimbalKit
+import GimbalKitDJI
+
+public enum LabTestKind: String, CaseIterable, Sendable, Equatable {
+    case connectionTelemetry, restStability, battery, yawMovement, stop, zoneGoto, constantTelemetry
+}
+public enum LabTestStatus: String, Sendable, Equatable { case passed, failed, skipped }
+public struct LabTestResult: Sendable, Identifiable {
+    public let id: UUID
+    public let kind: LabTestKind
+    public let status: LabTestStatus
+    public let summary: String
+    public let measurements: [String: Double]
+    public let durationSeconds: Double
+    public var name: String {
+        switch kind {
+        case .connectionTelemetry: "Conexión y telemetría viva"
+        case .restStability: "Reposo estable"
+        case .battery: "Batería plausible"
+        case .yawMovement: "Movimiento y retorno de yaw"
+        case .stop: "Parada"
+        case .zoneGoto: "Ir a zona"
+        case .constantTelemetry: "Telemetría constante 0x04/0x57"
+        }
+    }
+    public var statusText: String { status == .passed ? "PASA" : status == .failed ? "FALLA" : "OMITIDA" }
+    public init(kind: LabTestKind, status: LabTestStatus, summary: String, measurements: [String: Double], durationSeconds: Double) {
+        id = UUID(); self.kind = kind; self.status = status; self.summary = summary
+        self.measurements = measurements; self.durationSeconds = durationSeconds
+    }
+}
+
+public actor LabHardwareTestRunner {
+    private let transport: any OMTransport
+    private let device: any PoseFeedbackDevice
+    private let controller: GimbalController
+    private let navigator: GotoNavigator
+    private let store: ZoneStore
+    private let frames: LabFrameBuffer
+    private let battery: @Sendable () async -> LabBattery?
+    private let clock: RuntimeClock
+    private let limits = NavigationLimits()
+    private var running = false
+    private var referenceConfirmed = false
+    public init(transport: any OMTransport, device: any PoseFeedbackDevice, controller: GimbalController,
+                navigator: GotoNavigator, store: ZoneStore, frames: LabFrameBuffer,
+                battery: @escaping @Sendable () async -> LabBattery?, clock: RuntimeClock = .live) {
+        self.transport = transport; self.device = device; self.controller = controller
+        self.navigator = navigator; self.store = store; self.frames = frames; self.battery = battery; self.clock = clock
+    }
+    public func runAll() async -> [LabTestResult] {
+        var results: [LabTestResult] = []
+        for kind in LabTestKind.allCases {
+            if Task.isCancelled { await controller.stop(source: .app); break }
+            results.append(await run(kind))
+        }
+        return results
+    }
+    public func run(_ kind: LabTestKind) async -> LabTestResult {
+        guard !running else { return result(kind, .failed, "Ya hay una prueba en curso", [:], clock.now()) }
+        running = true; defer { running = false }
+        let started = clock.now()
+        do {
+            guard let initial = await device.poseSample(), initial.pose.isFinite,
+                  abs(initial.pose.yaw) <= 10, abs(initial.pose.pitch) <= 10 else {
+                throw LabTestFailure("La pose inicial debe estar a ≤10° del origen")
+            }
+            let initialAge = clock.now().timeIntervalSince(initial.receivedAt)
+            guard initialAge >= 0, initialAge <= limits.staleSeconds else {
+                throw LabTestFailure("La pose inicial está desactualizada", ["pose_age_seconds": initialAge])
+            }
+            let measurements = try await execute(kind, origin: initial.pose)
+            return result(kind, .passed, "Umbral superado", measurements, started)
+        } catch {
+            await controller.stop(source: .app)
+            let status: LabTestStatus = error is LabSkipped ? .skipped : .failed
+            let measurements = (error as? LabTestFailure)?.measurements ?? [:]
+            return result(kind, status, String(describing: error), measurements, started)
+        }
+    }
+    public func stopAll() async { await controller.stop(source: .app) }
+    public func setReferenceConfirmed(_ value: Bool) { referenceConfirmed = value }
+    private func execute(_ kind: LabTestKind, origin: Pose) async throws -> [String: Double] {
+        switch kind {
+        case .connectionTelemetry:
+            let first = await device.poseSample()?.sequence ?? 0
+            try await wait(5, origin: origin)
+            let last = await device.poseSample()?.sequence ?? first
+            let hz = Double(last &- first) / 5
+            guard hz >= 1 else { throw LabTestFailure("Telemetría <1 Hz", ["hz": hz]) }
+            return ["hz": hz]
+        case .restStability:
+            await controller.stop(source: .app)
+            let drift = try await observe(5, measureFrom: origin, safetyOrigin: origin)
+            guard drift < 0.2 else { throw LabTestFailure("Deriva ≥0,2°", ["drift_degrees": drift]) }
+            return ["drift_degrees": drift]
+        case .battery:
+            guard let value = await battery() else { throw LabTestFailure("Batería ausente") }
+            guard (0...100).contains(value.percent) else { throw LabTestFailure("Batería fuera de 0...100", ["percent": Double(value.percent)]) }
+            return ["percent": Double(value.percent), "charging": value.charging ? 1 : 0]
+        case .yawMovement:
+            try await controller.send(.speed(yaw: 10, pitch: 0, roll: 0), source: .app)
+            try await wait(2, origin: origin); await controller.stop(source: .app)
+            let turned = await device.currentPose()?.yaw ?? origin.yaw
+            let delta = turned - origin.yaw
+            guard (16...24).contains(delta) else { throw LabTestFailure("Yaw +10 ×2s dio \(delta)°; esperado 20° ±4°", ["outbound_degrees": delta]) }
+            try await controller.send(.speed(yaw: -10, pitch: 0, roll: 0), source: .app)
+            try await wait(2, origin: origin); await controller.stop(source: .app)
+            let returned = await device.currentPose()?.yaw ?? turned
+            let error = abs(returned - origin.yaw)
+            guard error <= 3 else { throw LabTestFailure("Retorno desviado \(error)°; máximo 3°", ["outbound_degrees": delta, "return_error_degrees": error]) }
+            return ["outbound_degrees": delta, "return_error_degrees": error]
+        case .stop:
+            try await controller.send(.speed(yaw: 6, pitch: 0, roll: 0), source: .app)
+            try await wait(0.3, origin: origin); await controller.stop(source: .app)
+            let stopped = await device.currentPose() ?? origin
+            let drift = try await observe(2, measureFrom: stopped, safetyOrigin: origin)
+            guard drift <= 0.3 else { throw LabTestFailure("STOP dejó deriva \(drift)°", ["drift_after_stop_degrees": drift]) }
+            return ["drift_after_stop_degrees": drift]
+        case .zoneGoto:
+            guard referenceConfirmed else { throw LabSkipped("Referencia humana sin confirmar") }
+            let zones = try await store.load()
+            guard let zone = zones.first(where: { !$0.forbidden }) else { throw LabSkipped("No hay zona permitida guardada") }
+            let lease = try await controller.requestLease(source: .app, zone: zone.name, seconds: 30)
+            let arrival = try await guardedGoto(zone: zone.name, lease: lease, origin: origin)
+            await controller.release(lease: lease)
+            let yaw = (zone.yaw.lowerBound + zone.yaw.upperBound) / 2
+            let pitch = (zone.pitch.lowerBound + zone.pitch.upperBound) / 2
+            let error = max(abs(arrival.yaw - yaw), abs(arrival.pitch - pitch))
+            guard error <= 2.5 else { throw LabTestFailure("Error de llegada \(error)°", ["center_error_degrees": error]) }
+            return ["center_error_degrees": error]
+        case .constantTelemetry:
+            let since = clock.now()
+            try await wait(2, origin: origin)
+            let values = await frames.constantTelemetry().filter { $0.receivedAt >= since }
+            guard values.count >= 3, let first = values.first?.payload,
+                  values.allSatisfy({ $0.payload == first }) else { throw LabTestFailure("0x04/0x57 ausente o cambiante", ["constant_frames": Double(values.count)]) }
+            return ["constant_frames": Double(values.count)]
+        }
+    }
+    private func wait(_ seconds: Double, origin: Pose) async throws {
+        _ = try await observe(seconds, measureFrom: origin, safetyOrigin: origin)
+    }
+    private func observe(_ seconds: Double, measureFrom reference: Pose, safetyOrigin: Pose) async throws -> Double {
+        let steps = max(1, Int(ceil(seconds / 0.1)))
+        var maximum = 0.0
+        for _ in 0..<steps {
+            try Task.checkCancellation()
+            try await clock.sleep(seconds / Double(steps))
+            guard let sample = await device.poseSample(), sample.pose.isFinite else { throw LabTestFailure("Pose ausente o no finita") }
+            let age = clock.now().timeIntervalSince(sample.receivedAt)
+            guard age >= 0, age <= limits.staleSeconds else { throw LabTestFailure("Pose desactualizada durante la prueba", ["pose_age_seconds": age]) }
+            let pose = sample.pose
+            let safetyDeviation = max(abs(pose.yaw - safetyOrigin.yaw), abs(pose.pitch - safetyOrigin.pitch))
+            guard safetyDeviation <= 45 else { throw LabTestFailure("Aborto de seguridad: orientación >45° del origen", ["deviation_degrees": safetyDeviation]) }
+            maximum = max(maximum, max(abs(pose.yaw - reference.yaw), abs(pose.pitch - reference.pitch)))
+        }
+        return maximum
+    }
+    private func guardedGoto(zone: String, lease: Lease, origin: Pose) async throws -> Pose {
+        let result = LabNavigationResult()
+        let navigation = Task {
+            do { await result.finish(.success(try await navigator.go(to: zone, source: .app, lease: lease))) }
+            catch { await result.finish(.failure(error)) }
+        }
+        let watcher = Task {
+            do {
+                while true {
+                    try Task.checkCancellation()
+                    try await clock.sleep(0.1)
+                    guard let sample = await device.poseSample(), sample.pose.isFinite else { throw LabTestFailure("Pose ausente durante ir a zona") }
+                    let age = clock.now().timeIntervalSince(sample.receivedAt)
+                    guard age >= 0, age <= limits.staleSeconds else { throw LabTestFailure("Pose desactualizada durante ir a zona", ["pose_age_seconds": age]) }
+                    let pose = sample.pose
+                    let deviation = max(abs(pose.yaw - origin.yaw), abs(pose.pitch - origin.pitch))
+                    guard deviation <= 45 else {
+                        let failure = LabTestFailure("Aborto de seguridad: orientación >45° del origen", ["deviation_degrees": deviation])
+                        await result.finish(.failure(failure))
+                        navigation.cancel(); await controller.stop(source: .app)
+                        throw failure
+                    }
+                }
+            } catch { if !Task.isCancelled { await result.finish(.failure(error)) } }
+        }
+        defer { navigation.cancel(); watcher.cancel() }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await result.value()
+        } onCancel: {
+            Task { navigation.cancel(); await controller.stop(source: .app); await result.finish(.failure(CancellationError())) }
+        }
+    }
+    private func result(_ kind: LabTestKind, _ status: LabTestStatus, _ summary: String,
+                        _ values: [String: Double], _ started: Date) -> LabTestResult {
+        let elapsed = max(0, clock.now().timeIntervalSince(started))
+        return LabTestResult(kind: kind, status: status, summary: summary, measurements: values, durationSeconds: elapsed)
+    }
+}
+
+private actor LabNavigationResult {
+    private var result: Result<Pose, any Error>?
+    private var waiter: CheckedContinuation<Pose, any Error>?
+    func finish(_ result: Result<Pose, any Error>) {
+        guard self.result == nil else { return }
+        self.result = result; waiter?.resume(with: result); waiter = nil
+    }
+    func value() async throws -> Pose {
+        if let result { return try result.get() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+}
+
+private struct LabTestFailure: Error, CustomStringConvertible {
+    let description: String
+    let measurements: [String: Double]
+    init(_ description: String, _ measurements: [String: Double] = [:]) { self.description = description; self.measurements = measurements }
+}
+private struct LabSkipped: Error, CustomStringConvertible { let description: String; init(_ description: String) { self.description = description } }
+
+public enum LabReport {
+    public static func markdown(results: [LabTestResult], date: Date) -> String {
+        let lines = results.map { result in
+            let values = result.measurements.keys.sorted().map { "\($0): \(result.measurements[$0]!)" }.joined(separator: ", ")
+            return "- **\(result.statusText)** \(result.name) — \(result.summary); \(values); \(String(format: "%.2f", result.durationSeconds)) s"
+        }
+        return (["# Informe GimbalLab — \(date.ISO8601Format())", "", "## Resultados", ""] + lines + [""]).joined(separator: "\n")
+    }
+}
+```
+
+La implementación de arriba se completa con estas decisiones obligatorias:
+
+1. `LabLink: OMTransport` expone `bluetoothAuthorization`, `disconnects`, `connect()` y `disconnect()`. `LabObservedTransport` consume una vez `base.notifications`, bifurca chunks hacia `OMDevice`, ejecuta `DUMLParser.feedEvents` y emite eventos con UUID, fecha, CRC, command set, command, carga y hex minúsculo. No duplica parser, CRC ni decodificación de telemetría.
+2. `LabModel.connect(using:)` carga `ZoneStore`, crea `LabObservedTransport`, `OMDevice(transport:now:)`, `GimbalController` con `SafetyPolicy(maxSpeed: 12, maxLeaseSeconds: 30, deadmanSeconds: 0.75, zones: savedZones)` y `GotoNavigator(controller:clock:)`; inicia el dispositivo solo tras la acción de conectar. Desconectar cancela tareas, cierra registro, para mediante controlador y marca referencia no confirmada. Sin reintento automático.
+3. `refresh()` agrega solo muestras con secuencia nueva, calcula Hz por marcas distintas y edad mediante `RuntimeClock`, retiene 30 s y actualiza batería. `LabFrameBuffer` conserva como máximo 2048 tramas; los contadores CRC continúan aunque la lista esté pausada o filtrada por command set/command. La pausa congela filas nuevas visibles, no las métricas.
+4. `LabRecordingDevice` registra después de un `send` exitoso; `.speed` guarda grados/s y `.stop` guarda ceros. El modelo emite `{t,fase,k:"rx",crc,hex}` y `{t,fase,k:"tx",yaw,pitch,roll}`; `LabCaptureReader` lee líneas de capturas viejas sin `k` y nuevas con `k`.
+5. `startManual` valida valor finito en 0...12 y mantiene una sola tarea que llama `GimbalController.send(.speed, source: .app)` cada 0,30 s. Soltar, cancelar, desconectar, ocultar la ventana o PARADA cancela el mando y llama `GimbalController.stop(source: .app)`. La UI nunca envía a `OMDevice` ni calcula pulsos.
+6. Ir a zona exige una zona permitida de `ZoneStore` y confirmación humana de referencia tras cada conexión; usa un lease `.app` de 30 s y `GotoNavigator.go`, liberándolo en éxito, error o cancelación. La prueba de zona se omite si falta esa confirmación. La parada cancela pruebas/navegación y termina con STOP del controlador.
+7. El runner ejecuta conexión/telemetría ≥1 Hz ×5 s, reposo <0,2° ×5 s, batería 0...100, giro +10 °/s ×2 s (20° ±4°) y retorno −10 °/s ×2 s (±3°), STOP con deriva ≤0,3° ×2 s, llegada a zona ≤2,5° y comparación del payload de ≥3 tramas 0x04/0x57. Sin zona guardada esta última navegación es OMITIDA. Cada test empieza dentro de ±10° del origen y comprueba continuamente el límite de 45°; al fallar/cancelar envía STOP por `GimbalController`. Cada resultado incluye PASA/FALLA/OMITIDA, mediciones y duración.
+8. `runAll()` es secuencial, `stopAll()` cancela y para, y todos los intervalos usan reloj inyectado. `LabReport.markdown(results:date:)` genera el informe solicitado sin sustituir medidas ausentes por valores inventados.
+
+- [ ] **Step 4: Ejecutar y comprobar que pasa**
+
+Run: `CLANG_MODULE_CACHE_PATH=$PWD/.build/modcache timeout 300 swift test --disable-sandbox --scratch-path .build`
+Expected: parser, formato JSONL ida/vuelta, filtros/contadores/pausa, Hz/edad, simulaciones PASS/FAIL, deriva, pose congelada, aborto >45° y parada pasan con las suites previas. Relojes de simulación; no se crea transporte Bluetooth.
+
+- [ ] **Step 5: Commit** (Claude): `feat: soporte portable y pruebas de hardware para GimbalLab`
+
+#### 12b. Ventana SwiftUI y empaquetado macOS
+
+- [ ] **Step 1: Escribir la prueba de bundle que falla**
+
+`scripts/check-lab-bundle.sh`:
+```bash
+#!/bin/zsh
+set -euo pipefail
+APP="${1:-.build/GimbalLab.app}"
+PLIST="$APP/Contents/Info.plist"
+plutil -lint "$PLIST"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST")" = GimbalLab
+test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PLIST")" = 14.0
+test -n "$(/usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$PLIST")"
+if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST" >/dev/null 2>&1; then
+    print -u2 "GimbalLab debe abrir una ventana normal, no una app de barra de menús"
+    exit 1
+fi
+test -x "$APP/Contents/MacOS/GimbalLab"
+codesign --verify --strict "$APP"
+```
+
+- [ ] **Step 2: Ejecutar y comprobar que falla**
+
+Run: `zsh scripts/check-lab-bundle.sh`
+Expected: falla porque `.build/GimbalLab.app/Contents/Info.plist` todavía no existe.
+
+- [ ] **Step 3: Implementar la app y el empaquetador**
+
+`Package.swift` (fichero completo final):
+```swift
+// swift-tools-version: 6.0
+import PackageDescription
+
+var products: [Product] = [
+    .library(name: "GimbalKit", targets: ["GimbalKit"]),
+    .library(name: "GimbalKitSim", targets: ["GimbalKitSim"]),
+    .library(name: "GimbalKitDJI", targets: ["GimbalKitDJI"]),
+    .library(name: "GimbalKitBLE", targets: ["GimbalKitBLE"]),
+    .library(name: "GimbalLabSupport", targets: ["GimbalLabSupport"]),
+]
+var targets: [Target] = [
+    .target(name: "GimbalKit"),
+    .target(name: "GimbalKitSim", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalKitDJI", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalKitBLE", dependencies: ["GimbalKitDJI"]),
+    .target(name: "GimbalLabSupport", dependencies: ["GimbalKit", "GimbalKitDJI"]),
+    .testTarget(name: "GimbalKitTests", dependencies: ["GimbalKit", "GimbalKitSim"]),
+    .testTarget(name: "GimbalKitDJITests", dependencies: ["GimbalKitDJI", "GimbalKit", "GimbalKitSim", "GimbalLabSupport"]),
+]
+#if os(macOS)
+products += [
+    .library(name: "GimbalKitMCP", targets: ["GimbalKitMCP"]),
+    .library(name: "GimbalHostSupport", targets: ["GimbalHostSupport"]),
+    .executable(name: "gimbal", targets: ["GimbalCLI"]),
+    .executable(name: "GimbalHostMac", targets: ["GimbalHostMac"]),
+    .executable(name: "GimbalLabMac", targets: ["GimbalLabMac"]),
+]
+targets += [
+    .target(name: "GimbalKitMCP", dependencies: ["GimbalKit"]),
+    .target(name: "GimbalHostSupport", dependencies: ["GimbalKit", "GimbalKitDJI", "GimbalKitMCP"]),
+    .executableTarget(name: "GimbalCLI", dependencies: ["GimbalKitMCP"]),
+    .executableTarget(name: "GimbalHostMac", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI", "GimbalKitMCP"]),
+    .executableTarget(name: "GimbalLabMac", dependencies: ["GimbalLabSupport", "GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI"]),
+    .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
+    .testTarget(name: "GimbalKitMCPTests", dependencies: ["GimbalKitMCP", "GimbalKit"]),
+    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+]
+#endif
+let package = Package(name: "GimbalKit", platforms: [.macOS(.v14), .iOS(.v17)], products: products, targets: targets)
+```
+
+`Sources/GimbalLabMac/GimbalLabApp.swift` (fichero completo):
+```swift
+import AppKit
+import Charts
+import CoreBluetooth
+import SwiftUI
+import UniformTypeIdentifiers
+import GimbalKit
+import GimbalKitBLE
+import GimbalKitDJI
+import GimbalHostSupport
+import GimbalLabSupport
+
+final class BLELabLink: LabLink, @unchecked Sendable {
+    private let transport = CoreBluetoothOMTransport()
+    let notifications: AsyncStream<[UInt8]>
+    let disconnects: AsyncStream<Void>
+    private let disconnectContinuation: AsyncStream<Void>.Continuation
+    var bluetoothAuthorization: LabBluetoothAuthorization {
+        switch CBManager.authorization {
+        case .allowedAlways: .allowed
+        case .denied: .denied
+        case .restricted: .restricted
+        case .notDetermined: .notDetermined
+        @unknown default: .unavailable
+        }
+    }
+    init() {
+        notifications = transport.notifications
+        let pair = AsyncStream.makeStream(of: Void.self)
+        disconnects = pair.stream; disconnectContinuation = pair.continuation
+        transport.onDisconnect = { pair.continuation.yield(()) }
+    }
+    func connect() async throws { try await transport.connect(timeout: 15) }
+    func disconnect() async { transport.disconnect(); disconnectContinuation.finish() }
+    func write(_ bytes: [UInt8]) async throws { try await transport.write(bytes) }
+}
+
+@MainActor enum LabComposition {
+    static let result: Result<(LabModel, HostInstanceLock), any Error> = Result {
+        let directory = ZoneStore.defaultURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let lock = try HostInstanceLock(directory: directory)
+        return (LabModel(store: ZoneStore()), lock)
+    }
+}
+
+@main @MainActor struct GimbalLabApp: App {
+    @State private var model: LabModel?
+    @State private var lock: HostInstanceLock?
+    @State private var startupError: String?
+    init() {
+        if case let .success((model, lock)) = LabComposition.result {
+            _model = State(initialValue: model); _lock = State(initialValue: lock)
+        } else if case let .failure(error) = LabComposition.result {
+            _model = State(initialValue: nil); _lock = State(initialValue: nil)
+            _startupError = State(initialValue: String(describing: error))
+        }
+    }
+    var body: some Scene {
+        WindowGroup("GimbalLab") {
+            if let model { LabView(model: model) }
+            else { VStack(spacing: 12) {
+                Text("No se pudo adquirir el control de la Osmo.").font(.headline)
+                Text(startupError ?? "Otro anfitrión puede estar abierto.")
+                Button("Salir") { NSApplication.shared.terminate(nil) }
+            }.padding(30) }
+        }.defaultSize(width: 1120, height: 820)
+    }
+}
+
+@MainActor struct LabView: View {
+    @Bindable var model: LabModel
+    @State private var speed = 6.0
+    @State private var phase = "pre"
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("GimbalLab").font(.largeTitle.bold())
+                Text("Bluetooth: \(model.authorizationText) · \(model.connectionText)")
+                if let battery = model.battery { Text("Batería: \(battery.percent)%\(battery.charging ? " · cargando" : "")") }
+                if let pose = model.pose {
+                    Text("Yaw \(pose.yaw, specifier: "%.1f")° · Pitch \(pose.pitch, specifier: "%.1f")° · Roll \(pose.roll, specifier: "%.1f")°")
+                    Text(String(format: "%.2f Hz · trama hace %.2f s", model.updateHz, model.poseAgeSeconds ?? 0))
+                } else { Text("Pose no disponible o desactualizada") }
+                Chart(model.poseHistory) { point in
+                    LineMark(x: .value("Tiempo", point.date), y: .value("Yaw", point.pose.yaw), series: .value("Eje", "Yaw"))
+                    LineMark(x: .value("Tiempo", point.date), y: .value("Pitch", point.pose.pitch), series: .value("Eje", "Pitch"))
+                }.frame(height: 180)
+                HStack {
+                    Button(model.connection == .connected ? "Desconectar" : "Conectar") {
+                        Task { if model.connection == .connected { await model.disconnect() } else { await model.connect(using: BLELabLink()) } }
+                    }
+                    Button("Reconectar") { Task { await model.reconnect(makeLink: { BLELabLink() }) } }
+                    Button("PARADA", role: .destructive) { Task { await model.stopAll() } }
+                        .font(.title2.bold()).buttonStyle(.borderedProminent).tint(.red)
+                }
+                Text("Mando manual · máximo 12 °/s").font(.headline)
+                Slider(value: $speed, in: 0...12, step: 0.5)
+                HStack {
+                    hold("Yaw −", axis: .yaw, direction: -1); hold("Yaw +", axis: .yaw, direction: 1)
+                    hold("Pitch −", axis: .pitch, direction: -1); hold("Pitch +", axis: .pitch, direction: 1)
+                }
+                TextField("Fase de grabación", text: $phase)
+                HStack {
+                    Button("Grabar JSONL") { saveJSONL() }
+                    Button("Detener grabación") { Task { await model.stopRecording() } }
+                    Button("Ejecutar todas") { Task { await model.runAllTests() } }
+                }
+                HStack {
+                    Button("Exportar informe Markdown") { exportReport() }
+                    Button("Ir a zona") { Task { await model.go(to: model.firstAllowedZoneName) } }
+                        .disabled(!model.referenceConfirmed || model.firstAllowedZoneName == nil)
+                }
+                ForEach(model.testResults) { result in
+                    Text("\(result.statusText) · \(result.name) · \(result.durationSeconds, specifier: "%.2f") s · \(result.summary)")
+                        .font(.caption).foregroundStyle(result.status == .failed ? .red : .primary)
+                }
+                if let error = model.errorMessage { Text(error).foregroundStyle(.red) }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tramas · \(model.validFrameCount) válidas / \(model.invalidFrameCount) CRC inválido").font(.headline)
+                HStack {
+                    TextField("commandSet hex", text: $model.commandSetFilter)
+                    TextField("command hex", text: $model.commandFilter)
+                    Toggle("Pausar lista", isOn: $model.isFrameListPaused)
+                }
+                List(model.visibleFrames) { frame in
+                    Text(String(format: "%@  0x%02x/0x%02x  %@", frame.crcValid ? "OK" : "CRC", frame.commandSet ?? 0, frame.command ?? 0, frame.hex))
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                }
+                Text("Zonas guardadas").font(.headline)
+                ForEach(model.zones, id: \.name) { zone in
+                    HStack {
+                        Text("\(zone.name) · yaw \(zone.yaw.lowerBound, specifier: "%.1f")...\(zone.yaw.upperBound, specifier: "%.1f") · pitch \(zone.pitch.lowerBound, specifier: "%.1f")...\(zone.pitch.upperBound, specifier: "%.1f")\(zone.forbidden ? " · prohibida" : "")")
+                        Spacer()
+                        Button("Ir") { Task { await model.go(to: zone.name) } }
+                            .disabled(zone.forbidden || !model.referenceConfirmed || model.connection != .connected)
+                    }
+                }
+                if !model.zones.isEmpty && !model.referenceConfirmed {
+                    Text("Compruebe la referencia física y las zonas guardadas antes de habilitar navegación.")
+                    Button("Confirmar referencia") { Task { await model.confirmReference() } }
+                }
+            }.frame(minWidth: 460)
+        }
+        .padding(18)
+        .onChange(of: phase) { _, value in Task { await model.setPhase(value) } }
+        .onDisappear { Task { await model.stopAll(); await model.disconnect() } }
+    }
+    private func hold(_ title: String, axis: LabAxis, direction: Int) -> some View {
+        Button(title) {}
+            .buttonStyle(.borderedProminent)
+            .disabled(model.connection != .connected)
+            .onLongPressGesture(minimumDuration: 0, pressing: { pressed in
+                if pressed { model.startManual(axis: axis, direction: direction, speed: speed) }
+                else { Task { await model.endManual() } }
+            }, perform: {})
+    }
+    private func exportReport() {
+        let panel = NSSavePanel()
+        let stamp = DateFormatter(); stamp.dateFormat = "yyyyMMdd-HHmmss"
+        panel.nameFieldStringValue = "informe-lab-\(stamp.string(from: Date())).md"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try model.exportReport(to: url) }
+            catch { model.presentError(String(describing: error)) }
+        }
+    }
+    private func saveJSONL() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "gimbalkit-session.jsonl"
+        panel.allowedContentTypes = [UTType(filenameExtension: "jsonl") ?? .plainText]
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                do { try await model.startRecording(at: url); await model.setPhase(phase) }
+                catch { model.presentError(String(describing: error)) }
+            }
+        }
+    }
+}
+```
+
+`scripts/build-lab-mac.sh`:
+```bash
+#!/bin/zsh
+set -euo pipefail
+cd "$(dirname "$0")/.."
+export CLANG_MODULE_CACHE_PATH="$PWD/.build/modcache"
+timeout 300 swift build --disable-sandbox --scratch-path .build -c release --product GimbalLabMac
+APP="$PWD/.build/GimbalLab.app"
+mkdir -p "$APP/Contents/MacOS"
+cp .build/release/GimbalLabMac "$APP/Contents/MacOS/GimbalLab"
+chmod +x "$APP/Contents/MacOS/GimbalLab"
+cat > "$APP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>dev.gimbalkit.lab.mac</string>
+<key>CFBundleName</key><string>GimbalLab</string>
+<key>CFBundleExecutable</key><string>GimbalLab</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>Conectar y probar el estabilizador desde GimbalLab.</string>
+</dict></plist>
+EOF
+plutil -lint "$APP/Contents/Info.plist"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = GimbalLab
+test -n "$(/usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$APP/Contents/Info.plist")"
+codesign --force --sign - "$APP"
+scripts/check-lab-bundle.sh "$APP"
+printf 'App preparada: %s\n' "$APP"
+```
+
+- [ ] **Step 4: Ejecutar y comprobar que pasa**
+
+Run: `chmod +x scripts/build-lab-mac.sh`
+Run: `chmod +x scripts/check-lab-bundle.sh`
+Run: `zsh -n scripts/build-lab-mac.sh`
+Run: `zsh -n scripts/check-lab-bundle.sh`
+Run: `CLANG_MODULE_CACHE_PATH=$PWD/.build/modcache timeout 300 swift build --disable-sandbox --scratch-path .build -c release --product GimbalLabMac`
+Run: `scripts/build-lab-mac.sh`
+Run: `scripts/check-lab-bundle.sh`
+Expected: `GimbalLabSupport` compila como dependencia portable; `GimbalLab.app` tiene permiso Bluetooth, ventana normal y firma ad hoc válida. El script empaqueta y verifica, no abre la app ni inicializa Bluetooth. La conexión requiere acción explícita.
+
+- [ ] **Step 5: Commit** (Claude): `feat: app GimbalLab de macOS y empaquetado`
+
+---
+
 ### Task 11 (MANUAL, la hace Claude con Jesús y la Osmo)
 
 **Files:**
-- Modify tras medir: `docs/research/telemetria-om-se.md`, `docs/superpowers/plans/ESTADO.md`
+- Modify tras medir: `docs/research/telemetria-om-se.md`, `docs/superpowers/plans/ESTADO.md`; guardar `informe-lab-<fecha>.md` en `docs/research/`
 - No modificar el driver para hacer pasar una medición; si falla, abrir una corrección concreta y repetir su prueba automática antes de volver a hardware.
 
 **Interfaces:**
-- Consumes: `.build/GimbalHostMac.app`, `.build/bin/gimbal`, herramientas `gimbal_status`, `gimbal_zones`, `gimbal_look(zone, lease_seconds <= 30)`, `gimbal_stop`.
-- Produces: evidencia de límites físicos, funcionamiento UI/TCC, reconexión y protocolo con cliente real; M4 solo se marca hecho tras superar esta lista.
+- Consumes: `.build/GimbalLab.app`, `.build/GimbalHostMac.app`, `.build/bin/gimbal`, herramientas `gimbal_status`, `gimbal_zones`, `gimbal_look(zone, lease_seconds <= 30)`, `gimbal_stop`.
+- Produces: informe medido desde GimbalLab, evidencia de límites físicos, funcionamiento UI/TCC, reconexión y protocolo con cliente real; M4 solo se marca hecho tras superar esta lista.
 
-- [ ] Abrir `.build/GimbalHostMac.app` como app. Aceptar el permiso de Bluetooth, comprobar recuperación de la SE conectada como HID, conexión, batería y pose. No lanzar simultáneamente GimbalSmoke, Python, WebBluetooth ni otra app que controle la Osmo.
-- [ ] Comprobar que cerrar el panel no detiene tick/reconexión; abrir auditoría, detener y salir. Verificar barra de menús sin icono de Dock y que un segundo proceso anfitrión queda bloqueado antes de crear CoreBluetooth.
-- [ ] Guardar «mesa» quieta: escribir el nombre, preparar, **cancelar** y comprobar que no se crea; preparar de nuevo y confirmar ±10°. Relanzar y reconectar: zonas visibles, movimiento bloqueado hasta confirmación humana. Comprobar la referencia físicamente antes de confirmarla; si cambió la base/referencia, no reutilizar esas zonas.
+- [ ] Construir `.build/GimbalLab.app` y `.build/GimbalHostMac.app` con sus scripts. Abrir **solo GimbalLab** primero. Verificar ventana normal, adquirir `HostInstanceLock` y confirmar que la app anfitriona no puede abrir una segunda conexión mientras GimbalLab está activo. No ejecutar GimbalSmoke, Python, WebBluetooth ni otra app que controle la Osmo.
+- [ ] Aceptar el permiso Bluetooth; comprobar que GimbalLab indica autorización, recuperación de la SE conectada como HID, conexión, batería/carga, yaw/pitch/roll, Hz, edad de trama y gráfica móvil de 30 s. Comprobar el registro crudo en hexadecimal, los CRC y filtro `commandSet/command`; pausar la lista y verificar que los contadores siguen avanzando.
+- [ ] Comprobar referencia y zonas persistidas. Tras una conexión nueva, las zonas permanecen visibles pero Ir queda bloqueado; confirmar manualmente solo después de verificar físicamente que la referencia actual coincide. No volver a guardar ni rebasar zonas para ocultar una discrepancia.
+- [ ] Con la Osmo firmemente montada y dentro de ±10° del origen, pulsar «Ejecutar todas». Verificar PASA/FALLA/OMITIDA, métricas y duración: telemetría ≥1 Hz/5 s, deriva <0,2°/5 s, batería 0...100, +10 °/s ×2 s = +20° ±4° y retorno −10 °/s ×2 s a ±3°, STOP con ≤0,3°/2 s, llegada a una zona guardada ≤2,5° y payload constante 0x04/0x57. La navegación se omite si no existe zona permitida. Ante fallo, STOP y no recalibrar límites para forzar PASA.
+- [ ] Probar cada mando manual con pulsación mantenida, deslizador limitado a 12 °/s y cadencia ≥0,3 s; al soltar debe salir STOP. Pulsar PARADA durante mando y durante una prueba; debe parar y no emitir SPEED tardíos. Confirmar que ningún test continúa si se aleja >45° del origen.
+- [ ] Grabar varias fases de RX y TX; comprobar que cada línea JSONL tiene `{t,fase,crc,hex}` más `k:"rx"`, y TX `{t,fase,k:"tx",yaw,pitch,roll}`. Detener, reabrir con el lector y exportar `informe-lab-<fecha>.md` a `docs/research/`.
+- [ ] Cerrar GimbalLab normalmente; verificar que su lock se libera. Después abrir `.build/GimbalHostMac.app`; aceptar TCC si macOS lo solicita, comprobar batería/pose y que el icono aparece en barra de menús sin Dock. Cerrar el panel no debe detener tick/reconexión; abrir auditoría, detener y salir.
+- [ ] Guardar «mesa» quieta desde el formulario del host: preparar, **cancelar** y comprobar que no se crea; preparar otra vez y confirmar ±10°. Relanzar el host y reconectar: zonas visibles, movimiento bloqueado hasta confirmación humana. Comprobar físicamente la referencia antes de confirmarla.
 - [ ] Activar MCP, comprobar puerto mostrado, copiar el comando y ejecutarlo en Claude Code. Verificar `initialize`, `notifications/initialized`, `tools/list` y que solo aparecen cuatro herramientas. El redactor/implementador no hace esta conexión ni configura Claude por su cuenta.
 - [ ] Con la pose ya dentro de «mesa», alejarla manualmente unos 6° del centro, llamar `.build/bin/gimbal look mesa` y observar pulsos lentos. Medir pose final, overshoot, retardo máximo de orientación y tiempo real de parada. Debe acabar en banda de ±2° y permanecer en la zona; si el frenado excede 0,20 s, el retardo 0,70 s o la ganancia 1,25, **no habilitar uso habitual** hasta recalcular margen/cadencia y añadir prueba de simulación con la nueva cota.
 - [ ] Repetir desde cerca de cada borde y junto a una zona prohibida creada con el formulario humano y confirmación (servidor apagado durante su creación). El navegador debe rechazar una envolvente insegura antes de mover. No crear zonas editando JSON ni añadir creación/edición de zonas a MCP.
 - [ ] Solicitar una zona disjunta desde fuera: debe fallar `outsideZone`, sin movimiento. Probar dos `gimbal look` concurrentes: uno obtiene el turno, el otro `busy`. Tras llegar, mostrar «un agente tiene el control de mesa» hasta caducar el lease (≤30 s), y después indicador apagado y lease nulo.
 - [ ] Durante un look, pulsar PARADA humana: la última orden física debe ser stop, el lease se revoca y no sale otra velocidad antigua. Cancelar la llamada/cerrar cliente durante un pulso: debe parar y liberar el lease. Apagar MCP durante un look: cancela herramienta, cierra conexiones y borra endpoint; la app sigue mostrando conexión.
-- [ ] Apagar/encender la Osmo: estado desconectado, ninguna orden tras reconectar hasta confirmar referencia; retroceso 0,5/1/2/4/8 s, un intento a la vez. Denegar temporalmente el permiso de Bluetooth y comprobar que la UI continúa usable y PARADA/Salir no esperan los 15 s de un intento cancelado.
+- [ ] Apagar/encender la Osmo desde el host: estado desconectado, ninguna orden tras reconectar hasta confirmar referencia; retroceso 0,5/1/2/4/8 s, un intento a la vez. Denegar temporalmente el permiso Bluetooth y comprobar que la UI continúa usable y PARADA/Salir no esperan los 15 s de un intento cancelado. Al acabar, cerrar el host antes de volver a GimbalLab.
 - [ ] Comprobar `.build/bin/gimbal status`, `zones`, `stop`, el registro de aceptación/rechazo y el token 0600, sin pegarlo en documentación/capturas públicas. Verificar que el comando copiado funciona con la versión local de Claude; si su sintaxis difiere, ajustar solo el formateador y su prueba, sin cambiar seguridad/transporte.
 - [ ] Registrar cifras y resultados reales en `docs/research/telemetria-om-se.md`; actualizar `ESTADO.md` con M4 hecho o casos pendientes. Añadir nota expresa: HID/joystick sigue sin soporte, Plan 4 es iOS/Atajos. Claude hace el commit `docs: validación manual de navegación y host macOS`.
 
@@ -3165,11 +4616,11 @@ Expected: modelo con servidor falso, cancelación, endpoint y exclusión de segu
 
 ## Autorrevisión
 
-- **Cobertura:** A navegador puro, firma exigida, proporcional/deadband, timeout, frescura, cancelación, simulación retardada y envolvente → Tasks 1–3. B cuatro herramientas, servicio inyectable, JSON-RPC/202, HTTP Network, puerto efímero y seguridad → Tasks 4–7 y 9. C JSON atómico, corrupto + .bak, escritura humana y audit existente en app → Tasks 4, 8, 10. D dueño único, reconexión, MenuBarExtra/LSUIElement, confirmación, parada `.app`, indicador, MCP/puerto/comando, tick 100 ms y CLI → Tasks 8–10. No hay implementación iOS/Intents ni HID.
-- **Código completo:** cada fichero nuevo está íntegro; los tres miembros y las propiedades que cambian del transporte tienen reemplazos/ubicación exactos. Los manifiestos de cada fase están completos. No hay pseudocódigo, marcadores ni pasos que remitan a copiar una implementación de otra tarea.
-- **Consistencia:** `PoseFeedbackDevice.poseSample`, `RuntimeClock.now/sleep`, `navigationContext/navigationPulse/haltNavigation/release`, `ZoneStore.load/save`, `LocalFiles.token/readEndpoint`, `GimbalService.status/zones/look/stop`, `MCPDispatcher.respond`, `HTTPParser.feed`, `MCPServerControl.start/stop`, `HostLink.connect/disconnect` y drafts coinciden en consumidores/productores. Los helpers de test compartidos están definidos una vez por target: `FakeService`, `session/post`, `FakeLink/StepSleeper/eventually`; no dependen de helpers privados de otro target.
-- **Review Focus probado:** marcas idénticas vs caché → Task 1; envío suspendido/stop/cleanup UUID y envolvente prohibida → Task 2; retardo, cadencia, stale/timeout/cancelación → Task 3; token/permisos/symlink y corrupción → Task 4; esquema, límites, errores y notificaciones → Task 5; rebinding/smuggling/límites → Task 6; bind real, 401/403/202 y lectura incompleta con reloj inyectado → Task 7; backoff/referencia/desconexión → Task 8; CLI/error → Task 9; lifecycle/toggle cancelado/lock/plist/firma → Task 10.
+- **Cobertura:** navegador seguro → Tasks 1–3; MCP y cliente CLI → Tasks 4–7 y 9; persistencia y anfitrión → Tasks 4, 8 y 10; telemetría cruda, CRC, JSONL, mando limitado, zonas y siete pruebas de hardware → Task 12a; ventana, TCC y exclusión del anfitrión → Task 12b y Task 11. `GimbalLabSupport` queda portable para Plan 4; aquí no se implementan Intents ni HID.
+- **Código completo:** cada fichero nuevo de Task 12 tiene bloque completo; test doubles reutilizan `RealFrames.swift`, `SimGimbal` y `ManualClock`. `DUMLParser` expone eventos CRC y se mantiene como parser único. Los scripts empaquetan sin abrir Bluetooth.
+- **Consistencia:** `PoseFeedbackDevice.poseSample`, `RuntimeClock.now/sleep`, `navigationContext/navigationPulse/haltNavigation/release`, `ZoneStore.load/save`, `LocalFiles.token/readEndpoint`, `GimbalService.status/zones/look/stop`, `MCPDispatcher.respond`, `HTTPParser.feed`, `MCPServerControl.start/stop`, `HostLink.connect/disconnect`, `LabLink`, `LabCaptureReader.read`, `LabSessionRecorder` y `LabHardwareTestRunner` coinciden en consumidores y productores. Los tests de laboratorio viven en `GimbalKitDJITests` para usar `RealFrames.swift` sin duplicarlo ni depender de otro target de pruebas.
+- **Review Focus probado:** navegación/lease y hardware retardado → Tasks 1–3; tokens, zonas, parser HTTP, loopback y CLI → Tasks 4–9; lifecycle, exclusión, TCC y bundle → Tasks 10–12; CRC malo, pausa/filtro, JSONL, Hz/edad, límite 45°, STOP, simulaciones pass/fail y navegación por zona → Task 12a.
 - **Límites explícitos:** Task 11 valida hardware/TCC, UI y cliente Claude real. El código de los bloques no ha sido ejecutado por el redactor; las expectativas son los criterios de implementación, no resultados ya obtenidos. No afirmar que el modelo físico demuestra cotas aún no medidas.
 - **Revisión local de SDK:** las interfaces instaladas de Network.framework confirman `NWListener`/`NWConnection: Sendable` desde macOS 14, callbacks `@Sendable`, `requiredLocalEndpoint` y puertos efímeros. Los callbacks saltan explícitamente a `MainActor`; no se fuerza aislamiento mediante `assumeIsolated` ni se usa una API exclusiva de macOS 26.
-- **Decisiones que afectan al uso:** pulsos de 6 °/s y asentamiento; rechazo de destinos fuera del lease; éxito mantiene el lease hasta expiración; confirmación de referencia por conexión nueva; creación humana de zonas permitidas/prohibidas con el mismo formulario de ±10°; endpoint local para puerto variable; servidor stateless JSON sin SSE y sin edición de zonas. Los scripts construyen pero no lanzan.
-- **Entrega:** 11 tareas: 10 con prueba automática y una final manual. Commits exclusivamente de Claude. Solo este documento se modifica durante su redacción.
+- **Decisiones que afectan al uso:** pulsos del navegador a 6 °/s; GimbalLab comparte `HostInstanceLock`; referencia se confirma por conexión; mando manual a 12 °/s máximo, cadencia ≥0,3 s y aborto a >45°; navegación por lease `.app` con `GotoNavigator`. La prueba de zona se omite sin zona permitida. Los scripts construyen pero no lanzan.
+- **Entrega:** Tasks 1–10, Task 12a/12b automáticas y Task 11 manual final. Commits exclusivamente de Claude. Solo este documento se modifica durante su redacción.

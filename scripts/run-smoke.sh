@@ -21,5 +21,6 @@ EOF
 OUT="${SMOKE_OUT:-/tmp/gimbalkit-smoke.txt}"
 printf '#!/bin/zsh\nexec "%s/Contents/MacOS/GimbalSmokeBin" %s > "%s" 2>&1\n' "$PWD/$APP" "${*:-}" "$OUT" > "$APP/Contents/MacOS/run"
 chmod +x "$APP/Contents/MacOS/run"
-codesign -s - --force --deep "$APP" >/dev/null
+# Firma ad hoc con un requisito basado en el IDENTIFICADOR (no en el hash del binario): así macOS conserva el permiso de Bluetooth entre reconstrucciones.
+codesign --force --sign - -r="designated => identifier \"dev.gimbalkit.smoke\"" "$APP" >/dev/null
 rm -f "$OUT"; open -W "$APP"; cat "$OUT"

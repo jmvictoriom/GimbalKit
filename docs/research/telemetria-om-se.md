@@ -42,8 +42,8 @@ Hardware: Osmo Mobile SE (firmware sin comprobar), móvil montado, base sobre tr
   continuo exige refrescar la orden (el deadman de 0,5 s del controlador ya lo exige).
 - **La pose va retrasada (~1 Hz y con latencia):** leerla justo al parar mide un giro a medias (14,3° en vez de 21°). Hay que esperar
   ≥ 2 s de asentamiento tras `stop` antes de tomar una pose de referencia (así lo hace ya el navegador y ahora también el Lab).
-- Tras la prueba de yaw la prueba de «parada» necesita el mismo asentamiento (corregido); pendiente de re-validar en hardware.
-- Un binario con firma ad hoc que se reconstruye puede ser rechazado por macOS (`Taskgated Invalid Signature`) y perder el permiso de Bluetooth.
+- Con esas correcciones la batería completa PASA en hardware: yaw +20,86° / vuelta 0,150°; tras `stop` la deriva es 0,004°; `0x04/0x57` constante (41 tramas); reposo 0,0065°.
+- **Firma de las apps:** una firma ad hoc normal cambia en cada compilación; macOS rechaza el binario (`Taskgated Invalid Signature`) y el permiso de Bluetooth deja de aplicarse. Los scripts de empaquetado firman ahora con `-r="designated => identifier ..."` (requisito por identificador): el permiso se concede una vez y se conserva.
 
 ## Hipótesis / sin resolver
 

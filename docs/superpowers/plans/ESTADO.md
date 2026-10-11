@@ -39,3 +39,16 @@ en `docs/research/telemetria-om-se.md` (giro de +22° y vuelta a −0,013° con 
 Pendiente (Plan 3): controlador «ir a zona» en bucle cerrado sobre pose retardada (~1,5 Hz) y con órdenes cada ≥ 0,25 s;
 joystick y botones por HID; app anfitriona de macOS (barra de menús) con servidor MCP y CLI; app iOS con Atajos.
 Atención: el soporte declara `speedControl + poseFeedback + battery`; `absoluteControl` y `joystickInput` sin verificar.
+
+## Plan 3 (2026-10-11): ir a zona, MCP HTTP, anfitrión macOS, CLI y GimbalLab — HECHO (salvo lo manual)
+
+Implementado por Codex Sol (4 tandas + modo `--auto-run`), revisado por Claude. 121 pruebas pasando (4 de ellas abren sockets y solo
+corren fuera del sandbox de Codex). GimbalLab validó en la Osmo: telemetría 1,0 Hz, reposo 0,0065°, batería, yaw +20,86° con vuelta
+a 0,15°, parada con deriva 0,004° y `0x04/0x57` constante.
+
+**Pendiente (manual):**
+- Probar «ir a zona» en hardware: guardar una zona desde la app de barra de menús (confirmación humana) o con el Lab y medir la
+  velocidad efectiva del navegador (simulación: ~0,65 °/s; plazo de 25 s ⇒ alcance ≈ 16°). Ajustar duración de los pulsos con datos.
+- Probar la app de barra de menús (`scripts/build-host-mac.sh`), el servidor MCP con Claude real y la CLI `gimbal`.
+- Joystick y botones (HID) sin resolver. iOS + Atajos = Plan 4.
+Lecciones de hardware en `docs/research/telemetria-om-se.md` (órdenes SPEED de ~0,5 s, pose retrasada, firma por identificador).

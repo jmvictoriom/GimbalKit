@@ -41,6 +41,7 @@ EOF
 plutil -lint "$APP/Contents/Info.plist"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = GimbalLab
 test -n "$(/usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$APP/Contents/Info.plist")"
-codesign --force --sign - "$APP"
+# Firma ad hoc con un requisito basado en el IDENTIFICADOR (no en el hash del binario): así macOS conserva el permiso de Bluetooth entre reconstrucciones.
+codesign --force --sign - -r="designated => identifier \"dev.gimbalkit.lab.mac\"" "$APP"
 scripts/check-lab-bundle.sh "$APP"
 printf 'App preparada: %s\n' "$APP"

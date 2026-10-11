@@ -25,6 +25,7 @@ cat > "$HOST_APP/Contents/Info.plist" <<'EOF'
 <key>NSBluetoothAlwaysUsageDescription</key><string>Conectar y controlar el estabilizador desde GimbalKit.</string>
 </dict></plist>
 EOF
-codesign --force --sign - "$HOST_APP"
+# Firma ad hoc con un requisito basado en el IDENTIFICADOR (no en el hash del binario): así macOS conserva el permiso de Bluetooth entre reconstrucciones.
+codesign --force --sign - -r="designated => identifier \"dev.gimbalkit.host.mac\"" "$HOST_APP"
 scripts/check-host-bundle.sh "$HOST_APP"
 printf 'App preparada: %s\nCLI preparada: %s\n' "$HOST_APP" "$PWD/.build/bin/gimbal"

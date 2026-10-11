@@ -1,3 +1,4 @@
+import CoreBluetooth
 import Foundation
 import GimbalKit
 import GimbalKitBLE
@@ -8,6 +9,8 @@ let move = CommandLine.arguments.contains("--mover")
 let transport = CoreBluetoothOMTransport()
 let device = OMDevice(transport: transport)
 
+// 0 = sin decidir (¿hay un aviso de permiso pendiente?), 1 = restringido, 2 = denegado, 3 = concedido
+print("AUTORIZACION_BLUETOOTH \(CBCentralManager.authorization.rawValue)")
 do {
     try await transport.connect(timeout: 15)
     print("CONECTADA")

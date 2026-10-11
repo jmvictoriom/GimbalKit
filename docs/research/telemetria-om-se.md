@@ -16,13 +16,25 @@ Hardware: Osmo Mobile SE (firmware sin comprobar), móvil montado, base sobre tr
 | Telemetría de orientación a ~1,5 Hz (útil pero lenta) | ~167 tramas `0x04/0x05` en ~110 s |
 | Con órdenes SPEED cada 0,25 s (time=10) la Osmo obedece | todas las fases de movimiento |
 
+## Prueba de humo con la librería (GimbalKit, Swift, 2026-10-11)
+
+`scripts/run-smoke.sh [--mover]`: conecta con `CoreBluetoothOMTransport` (recupera la Osmo ya conectada), lee con `OMDevice`.
+
+| Medida | Resultado |
+|---|---|
+| Pose inicial (quieta, trípode) | (−0,011°, −0,003°, 0,002°) |
+| Tras `speed(yaw: 10)` 2 s con órdenes cada 0,3 s | yaw **+22,01°**, pitch −0,18°, roll −1,04° |
+| Tras `speed(yaw: −10)` 2 s | yaw **−0,013°** (vuelve al origen) |
+| Batería | 18 %, `charging` pasa a `true` al enchufarla (bit de carga confirmado) |
+| Autorización de Bluetooth | una app nueva necesita que se acepte el aviso del sistema la primera vez |
+
 ## Hipótesis / sin resolver
 
 - `0x04/0x57` (el más frecuente, 6 B) **no cambia nunca** (ni con joystick ni con botones): el mando físico no sale por este
   canal. La Osmo se ve en macOS como «HID BLE»: probablemente joystick y botones llegan como informes HID (servicio 0x1812).
 - Los 10 primeros bytes de la carga de `0x04/0x05` parecen ángulos de motor en 0,1° (Int16 LE): `carga[4..<6]` varía como el
   yaw (+217 para +21,7°) y `carga[0..<2]` como el pitch (−219, con desplazamiento cercano a ±180°). Sin confirmar.
-- `0x05/0x06`: `carga[0]` = 0x19 (25 %) se interpreta como batería (según om-research); sin contrastar con la pantalla.
+- `0x05/0x06`: `carga[0]` = porcentaje de batería (bit de carga confirmado al enchufarla); sin contrastar el porcentaje con la pantalla.
 - Con órdenes cada 0,1 s la Osmo no obedeció (o las descartó): usar ≥ 0,25 s entre órdenes de velocidad.
 - Modos `RELATIVE`/`ABSOLUTE` de `OMRotate` sin probar en la SE.
 

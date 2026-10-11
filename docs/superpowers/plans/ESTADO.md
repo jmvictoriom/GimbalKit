@@ -29,3 +29,13 @@ Pendiente para el Plan 2:
   las escrituras en orden de llegada y nunca reordenar una parada.
 - Las fachadas (Atajos, MCP) construyen la `ControlSource`; el host debe garantizar que un agente jamás pueda pasar `.app`
   ni `.physical`.
+
+## Plan 2 (2026-10-11): driver de la Osmo SE — HECHO
+
+M2 completo y validado en hardware: telemetría real (cuaternión y batería), estimador de pose, conversión de unidades,
+`OMDevice` y `CoreBluetoothOMTransport` (módulo `GimbalKitBLE`), prueba de humo `scripts/run-smoke.sh`. 59 pruebas. Medidas
+en `docs/research/telemetria-om-se.md` (giro de +22° y vuelta a −0,013° con la librería).
+
+Pendiente (Plan 3): controlador «ir a zona» en bucle cerrado sobre pose retardada (~1,5 Hz) y con órdenes cada ≥ 0,25 s;
+joystick y botones por HID; app anfitriona de macOS (barra de menús) con servidor MCP y CLI; app iOS con Atajos.
+Atención: el soporte declara `speedControl + poseFeedback + battery`; `absoluteControl` y `joystickInput` sin verificar.

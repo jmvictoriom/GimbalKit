@@ -2,6 +2,7 @@
 import PackageDescription
 
 var products: [Product] = [
+    .library(name: "GimbalWidgetSupport", targets: ["GimbalWidgetSupport"]),
     .library(name: "GimbalWatchKit", targets: ["GimbalWatchKit"]),
     .library(name: "GimbalKit", targets: ["GimbalKit"]),
     .library(name: "GimbalKitSim", targets: ["GimbalKitSim"]),
@@ -10,6 +11,7 @@ var products: [Product] = [
     .library(name: "GimbalLabSupport", targets: ["GimbalLabSupport"]),
 ]
 var targets: [Target] = [
+    .target(name: "GimbalWidgetSupport"),
     .target(name: "GimbalWatchKit"),
     .target(name: "GimbalKit"),
     .target(name: "GimbalKitSim", dependencies: ["GimbalKit"]),
@@ -30,21 +32,23 @@ products += [
 ]
 targets += [
     .target(name: "GimbalKitMCP", dependencies: ["GimbalKit"]),
-    .target(name: "GimbalHostSupport", dependencies: ["GimbalWatchKit", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitBLE"]),
+    .target(name: "GimbalHostSupport", dependencies: ["GimbalWidgetSupport", "GimbalWatchKit", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitBLE"]),
     .target(name: "GimbalKitIntents", dependencies: ["GimbalKit", "GimbalKitMCP", "GimbalHostSupport"]),
     .executableTarget(name: "GimbalCLI", dependencies: ["GimbalKitMCP"]),
     .executableTarget(name: "GimbalHostMac", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI", "GimbalKitMCP"]),
     .executableTarget(name: "GimbalLabMac", dependencies: ["GimbalLabSupport", "GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI"]),
     .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
     .testTarget(name: "GimbalKitMCPTests", dependencies: ["GimbalKitMCP", "GimbalKit"]),
-    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalWatchKit", "GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalWidgetSupport", "GimbalWatchKit", "GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
     .testTarget(name: "GimbalWatchKitTests", dependencies: ["GimbalWatchKit"]),
     .testTarget(name: "GimbalKitIntentsTests", dependencies: ["GimbalKitIntents", "GimbalHostSupport", "GimbalKit", "GimbalKitMCP"]),
     .testTarget(
         name: "GimbalAppTests",
         dependencies: ["GimbalHostSupport", "GimbalWatchKit", "GimbalKit", "GimbalKitMCP"],
         path: "Apps",
-        exclude: ["project.yml", "GimbalPhone/GimbalPhoneApp.swift", "GimbalPhone/PhoneHomeView.swift",
+        exclude: ["project.yml", "GimbalPhoneWidgets", "GimbalPhoneShared", "GimbalPhone/GimbalPhone.entitlements",
+                  "GimbalPhone/PhoneLiveActivityController.swift", "GimbalPhone/PhoneSettingsView.swift",
+                  "GimbalPhone/GimbalPhoneApp.swift", "GimbalPhone/PhoneHomeView.swift",
                   "GimbalPhone/Neumorphism.swift", "GimbalPhone/ZoneMapView.swift", "GimbalPhone/PhoneHaptics.swift",
                   "GimbalPhone/Info.plist", "GimbalWatch/GimbalWatchApp.swift", "GimbalWatch/WatchHomeView.swift",
                   "GimbalWatch/Info.plist", "GimbalKitApps.xcodeproj",

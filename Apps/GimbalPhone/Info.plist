@@ -18,10 +18,23 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.gimbalkit.phone</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gimbalkit</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>GimbalKit usa Bluetooth para conectar con tu Osmo Mobile.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

@@ -14,6 +14,40 @@ schemes:
       targets:
         GimbalWatch: all
 targets:
+  GimbalPhoneWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GimbalPhoneWidgets
+        excludes:
+          - Info.plist
+          - GimbalPhoneWidgets.entitlements
+      - path: GimbalPhoneShared
+    info:
+      path: GimbalPhoneWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: GimbalKit
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    dependencies:
+      - package: GimbalKit
+        product: GimbalWidgetSupport
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gimbalkit.phone.widgets
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) GIMBAL_WIDGET_EXTENSION"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        SKIP_INSTALL: "YES"
+        CODE_SIGNING_ALLOWED: "NO"
+        # Personal Team: no App Groups entitlement on device by default.
+        # Paid teams can override this variable for both targets (see docs).
+        GIMBAL_SHARED_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: "$(GIMBAL_SHARED_ENTITLEMENTS)"
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": GimbalPhoneWidgets/GimbalPhoneWidgets.entitlements
   GimbalWatch:
     type: application
     platform: watchOS
@@ -48,10 +82,17 @@ targets:
       - path: GimbalPhone
         excludes:
           - Info.plist
+          - GimbalPhone.entitlements
+      - path: GimbalPhoneShared
     info:
       path: GimbalPhone/Info.plist
       properties:
         CFBundleDisplayName: GimbalKit
+        NSSupportsLiveActivities: true
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.gimbalkit.phone
+            CFBundleURLSchemes:
+              - gimbalkit
         NSBluetoothAlwaysUsageDescription: GimbalKit usa Bluetooth para conectar con tu Osmo Mobile.
         UIBackgroundModes:
           - bluetooth-central
@@ -69,6 +110,10 @@ targets:
         product: GimbalKitIntents
       - package: GimbalKit
         product: GimbalWatchKit
+      - package: GimbalKit
+        product: GimbalWidgetSupport
+      - target: GimbalPhoneWidgets
+        embed: true
       - target: GimbalWatch
         embed: true
     settings:
@@ -80,3 +125,6 @@ targets:
         SWIFT_STRICT_CONCURRENCY: complete
         CODE_SIGNING_ALLOWED: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GIMBAL_SHARED_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: "$(GIMBAL_SHARED_ENTITLEMENTS)"
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": GimbalPhone/GimbalPhone.entitlements

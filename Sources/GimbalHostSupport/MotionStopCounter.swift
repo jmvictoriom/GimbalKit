@@ -30,6 +30,14 @@ public final class MotionStopCounter: @unchecked Sendable {
         return value
     }
 
+    /// Ejecuta la validación y la publicación síncrona bajo la misma exclusión
+    /// que STOP. El closure no debe suspender ni volver a entrar en el contador.
+    public func withValue<Result>(_ body: (UInt64) throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(value)
+    }
+
     @discardableResult
     public func increment() -> UInt64 {
         lock.lock()

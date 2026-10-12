@@ -2,6 +2,7 @@
 import PackageDescription
 
 var products: [Product] = [
+    .library(name: "GimbalWatchKit", targets: ["GimbalWatchKit"]),
     .library(name: "GimbalKit", targets: ["GimbalKit"]),
     .library(name: "GimbalKitSim", targets: ["GimbalKitSim"]),
     .library(name: "GimbalKitDJI", targets: ["GimbalKitDJI"]),
@@ -9,6 +10,7 @@ var products: [Product] = [
     .library(name: "GimbalLabSupport", targets: ["GimbalLabSupport"]),
 ]
 var targets: [Target] = [
+    .target(name: "GimbalWatchKit"),
     .target(name: "GimbalKit"),
     .target(name: "GimbalKitSim", dependencies: ["GimbalKit"]),
     .target(name: "GimbalKitDJI", dependencies: ["GimbalKit"]),
@@ -28,14 +30,15 @@ products += [
 ]
 targets += [
     .target(name: "GimbalKitMCP", dependencies: ["GimbalKit"]),
-    .target(name: "GimbalHostSupport", dependencies: ["GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitBLE"]),
+    .target(name: "GimbalHostSupport", dependencies: ["GimbalWatchKit", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitBLE"]),
     .target(name: "GimbalKitIntents", dependencies: ["GimbalKit", "GimbalKitMCP", "GimbalHostSupport"]),
     .executableTarget(name: "GimbalCLI", dependencies: ["GimbalKitMCP"]),
     .executableTarget(name: "GimbalHostMac", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI", "GimbalKitMCP"]),
     .executableTarget(name: "GimbalLabMac", dependencies: ["GimbalLabSupport", "GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI"]),
     .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
     .testTarget(name: "GimbalKitMCPTests", dependencies: ["GimbalKitMCP", "GimbalKit"]),
-    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+    .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalWatchKit", "GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+    .testTarget(name: "GimbalWatchKitTests", dependencies: ["GimbalWatchKit"]),
     .testTarget(name: "GimbalKitIntentsTests", dependencies: ["GimbalKitIntents", "GimbalHostSupport", "GimbalKit", "GimbalKitMCP"]),
 ]
 #endif

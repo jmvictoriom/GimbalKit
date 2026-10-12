@@ -1,0 +1,80 @@
+name: GimbalKitApps
+options:
+  createIntermediateGroups: true
+packages:
+  GimbalKit:
+    path: ..
+schemes:
+  GimbalPhone:
+    build:
+      targets:
+        GimbalPhone: all
+  GimbalWatch:
+    build:
+      targets:
+        GimbalWatch: all
+targets:
+  GimbalWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: GimbalWatch
+        excludes:
+          - Info.plist
+    info:
+      path: GimbalWatch/Info.plist
+      properties:
+        CFBundleDisplayName: GimbalKit Watch
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: dev.gimbalkit.phone
+    dependencies:
+      - package: GimbalKit
+        product: GimbalWatchKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gimbalkit.phone.watchkitapp
+        SWIFT_VERSION: "6.0"
+        WATCHOS_DEPLOYMENT_TARGET: "10.0"
+        TARGETED_DEVICE_FAMILY: "4"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGNING_ALLOWED: "NO"
+  GimbalPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GimbalPhone
+        excludes:
+          - Info.plist
+    info:
+      path: GimbalPhone/Info.plist
+      properties:
+        CFBundleDisplayName: GimbalKit
+        NSBluetoothAlwaysUsageDescription: GimbalKit usa Bluetooth para conectar con tu Osmo Mobile.
+        UIBackgroundModes:
+          - bluetooth-central
+        UILaunchScreen: {}
+    dependencies:
+      - package: GimbalKit
+        product: GimbalKit
+      - package: GimbalKit
+        product: GimbalKitDJI
+      - package: GimbalKit
+        product: GimbalKitBLE
+      - package: GimbalKit
+        product: GimbalHostSupport
+      - package: GimbalKit
+        product: GimbalKitIntents
+      - package: GimbalKit
+        product: GimbalWatchKit
+      - target: GimbalWatch
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gimbalkit.phone
+        SWIFT_VERSION: "6.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGNING_ALLOWED: "NO"

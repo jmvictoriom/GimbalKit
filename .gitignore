@@ -3,3 +3,6 @@
 *.xcodeproj/xcuserdata/
 .DS_Store
 .superpowers/
+
+# Proyecto de Xcode generado con XcodeGen (la fuente es Apps/project.yml)
+Apps/*.xcodeproj/

@@ -40,6 +40,15 @@ targets += [
     .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalWatchKit", "GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
     .testTarget(name: "GimbalWatchKitTests", dependencies: ["GimbalWatchKit"]),
     .testTarget(name: "GimbalKitIntentsTests", dependencies: ["GimbalKitIntents", "GimbalHostSupport", "GimbalKit", "GimbalKitMCP"]),
+    .testTarget(
+        name: "GimbalAppTests",
+        dependencies: ["GimbalHostSupport", "GimbalWatchKit", "GimbalKit", "GimbalKitMCP"],
+        path: "Apps",
+        exclude: ["project.yml", "GimbalPhone/GimbalPhoneApp.swift", "GimbalPhone/PhoneHomeView.swift",
+                  "GimbalPhone/Info.plist", "GimbalWatch/GimbalWatchApp.swift", "GimbalWatch/WatchHomeView.swift",
+                  "GimbalWatch/Info.plist", "GimbalKitApps.xcodeproj"],
+        sources: ["GimbalPhone/PhoneWatchBridge.swift", "GimbalWatch/WatchConnectivityClient.swift", "Tests"]
+    ),
 ]
 #endif
 let package = Package(name: "GimbalKit", platforms: [.macOS(.v14), .iOS(.v17), .watchOS(.v10)], products: products, targets: targets)

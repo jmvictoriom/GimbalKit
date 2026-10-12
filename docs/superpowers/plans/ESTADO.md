@@ -52,3 +52,16 @@ a 0,15°, parada con deriva 0,004° y `0x04/0x57` constante.
 - Probar la app de barra de menús (`scripts/build-host-mac.sh`), el servidor MCP con Claude real y la CLI `gimbal`.
 - Joystick y botones (HID) sin resolver. iOS + Atajos = Plan 4.
 Lecciones de hardware en `docs/research/telemetria-om-se.md` (órdenes SPEED de ~0,5 s, pose retrasada, firma por identificador).
+
+## Plan 4 (2026-10-12): iPhone, Atajos y mando mínimo de Apple Watch — CÓDIGO HECHO (falta instalar y probar con los aparatos)
+
+Plan reescrito tras 5 auditorías (la última, «SIN CRÍTICOS»): pasó de reescribir el núcleo de seguridad a ser ADITIVO (solo `MotionStopCounter` y `stopToken` opcional en
+`HostRuntime.look`; `GimbalController`, `GotoNavigator`, `NavigationSafety` y `OMDevice` intactos). Implementado por Codex Sol en 3 tandas; 175 pruebas (4 abren loopback y solo corren fuera del sandbox de Codex);
+`xcodegen generate` + `xcodebuild` compilan GimbalPhone (simulador iOS) y GimbalWatch (simulador watchOS). Fuente del proyecto: `Apps/project.yml`.
+
+Alcance v1 del reloj: PARADA, «Mirar a zona», estado y lista de zonas (STOP siempre primero, silencio de 2 s tras cualquier STOP, un solo movimiento a la vez, parada si pierde el alcance).
+Sin jog continuo ni pasos: se descartó tras tres auditorías con críticos de carrera. Atajos: Mirar a zona, Parar, Estado, Guardar zona aquí.
+
+**Pendiente (manual, requiere a Jesús):** firma e instalación en iPhone y Apple Watch reales (cuenta de desarrollador: equipo de Xcode), prueba de Atajos/Siri, del mando del reloj y de la reconexión BLE en segundo plano;
+probar «ir a zona» en la Osmo y medir la velocidad real del navegador (simulación ~0,65 °/s); app de barra de menús y MCP con Claude real; joystick/botones (HID).
+Hallazgos medios de la quinta auditoría sin aplicar: el estado del reloj no se refresca solo con cambios de zonas/batería (se refresca al pedirlo).

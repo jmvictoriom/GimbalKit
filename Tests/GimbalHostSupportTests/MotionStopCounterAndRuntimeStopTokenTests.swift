@@ -192,8 +192,9 @@ func stopAfterLeaseGrantRevokesBeforeTheNextSpeedPulse(stop: Bool) async throws 
     #expect(await eventually { await sleeper.requested.filter { $0 == 0.1 }.count >= 2 })
     if stop { await runtime.humanStop() }
     let writesAfterStop = await link.writes.count
-    // Fresh, distinct samples away from the center satisfy the settling requirements.
-    for _ in 0..<12 {
+    // Fresh, distinct samples away from the center satisfy the settling requirements. El navegador necesita ~10 pasos simulados
+    // (0,9 s de asentamiento en pasos de 0,1 s); el margen amplio evita fallos intermitentes bajo la carga de la suite completa.
+    for _ in 0..<40 {
         let waits = await sleeper.requested.filter { $0 == 0.1 }.count
         await sleeper.advance(0.1)
         await link.attitude(yaw: 5)

@@ -45,6 +45,15 @@ Hardware: Osmo Mobile SE (firmware sin comprobar), móvil montado, base sobre tr
 - Con esas correcciones la batería completa PASA en hardware: yaw +20,86° / vuelta 0,150°; tras `stop` la deriva es 0,004°; `0x04/0x57` constante (41 tramas); reposo 0,0065°.
 - **Firma de las apps:** una firma ad hoc normal cambia en cada compilación; macOS rechaza el binario (`Taskgated Invalid Signature`) y el permiso de Bluetooth deja de aplicarse. Los scripts de empaquetado firman ahora con `-r="designated => identifier ..."` (requisito por identificador): el permiso se concede una vez y se conserva.
 
+## App de iPhone con la Osmo (2026-10-12, primera prueba de «Mirar a zona»)
+
+- **«Mirar a zona» desde la app del iPhone mueve la Osmo real** hasta el centro de la zona (cadena completa: app → pose → `GotoNavigator` → `GimbalController` → Osmo).
+- Fallos que aparecieron al probar y su causa (todos de uso, no de código): sin confirmar la referencia (`referenceRequired`); la Osmo fuera del rango de la zona
+  (`outsideZone`: el navegador solo arranca desde dentro); zonas guardadas en una sesión anterior con otra referencia; ya dentro de ±2° del centro (llega sin moverse); un permiso retenido
+  («busy») que caduca a los 30 s. La app mostraba un mensaje genérico para todo: ahora `LookFailureText` da el motivo en castellano.
+- Reiniciar o reconectar la app invalida la referencia y hay que confirmarla de nuevo (a propósito). Depurar con `devicectl ... --console` reinicia la app.
+- Apps gratuitas de Xcode: máximo 3 por dispositivo (había que quitar una) y caducan a los 7 días.
+
 ## Hipótesis / sin resolver
 
 - `0x04/0x57` (el más frecuente, 6 B) **no cambia nunca** (ni con joystick ni con botones): el mando físico no sale por este

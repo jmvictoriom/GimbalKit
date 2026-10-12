@@ -60,7 +60,8 @@ public final class PhoneHostModel {
             _ = try await environment.runtime.look(zone: zone, leaseSeconds: 30, stopToken: token)
             await refresh()
         } catch {
-            errorMessage = "No se pudo mirar a \(zone). Compruebe conexión, referencia y zona."
+            print("[GimbalKit] mirar a «\(zone)» falló: \(error)")
+            errorMessage = "No se pudo mirar a \(zone): \(LookFailureText.reason(for: error))"
         }
     }
 

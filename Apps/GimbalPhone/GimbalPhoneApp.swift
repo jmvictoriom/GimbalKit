@@ -16,7 +16,7 @@ struct GimbalPhoneApp: App, AppIntentsPackage {
 
     init() {
         let environment = PhoneHostEnvironment.shared
-        let model = PhoneHostModel(environment: environment)
+        let model = PhoneHostModel(environment: environment, haptics: PhoneHaptics())
         let service = PhoneWatchService(runtime: environment.runtime)
         let bridge = PhoneWatchBridge(service: service)
         _model = State(initialValue: model)

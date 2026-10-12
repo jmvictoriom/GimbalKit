@@ -65,3 +65,9 @@ Sin jog continuo ni pasos: se descartó tras tres auditorías con críticos de c
 **Pendiente (manual, requiere a Jesús):** firma e instalación en iPhone y Apple Watch reales (cuenta de desarrollador: equipo de Xcode), prueba de Atajos/Siri, del mando del reloj y de la reconexión BLE en segundo plano;
 probar «ir a zona» en la Osmo y medir la velocidad real del navegador (simulación ~0,65 °/s); app de barra de menús y MCP con Claude real; joystick/botones (HID).
 Hallazgos medios de la quinta auditoría sin aplicar: el estado del reloj no se refresca solo con cambios de zonas/batería (se refresca al pedirlo).
+
+## App de iPhone: rediseño neumórfico y funciones nuevas (2026-10-12)
+
+Sistema de diseño neumórfico propio (`Apps/GimbalPhone/Neumorphism.swift`; claro y oscuro, acentos del icono). Nuevo: esfera de orientación en vivo, **mapa de zonas** (plano yaw/pitch con zonas, prohibidas y pose),
+**borrar zonas** con confirmación (`HostRuntime.deleteZone`, único cambio del runtime), resultado claro tras «Mirar» (`LookOutcome`: llegó / ya estabas dentro / motivo real del fallo) y vibración.
+193 pruebas (15 nuevas); núcleo de seguridad intacto. Verificado en simulador (claro/oscuro) e instalado en el iPhone.

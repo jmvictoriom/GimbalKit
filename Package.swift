@@ -21,19 +21,22 @@ var targets: [Target] = [
 products += [
     .library(name: "GimbalKitMCP", targets: ["GimbalKitMCP"]),
     .library(name: "GimbalHostSupport", targets: ["GimbalHostSupport"]),
+    .library(name: "GimbalKitIntents", targets: ["GimbalKitIntents"]),
     .executable(name: "gimbal", targets: ["GimbalCLI"]),
     .executable(name: "GimbalHostMac", targets: ["GimbalHostMac"]),
     .executable(name: "GimbalLabMac", targets: ["GimbalLabMac"]),
 ]
 targets += [
     .target(name: "GimbalKitMCP", dependencies: ["GimbalKit"]),
-    .target(name: "GimbalHostSupport", dependencies: ["GimbalKit", "GimbalKitDJI", "GimbalKitMCP"]),
+    .target(name: "GimbalHostSupport", dependencies: ["GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitBLE"]),
+    .target(name: "GimbalKitIntents", dependencies: ["GimbalKit", "GimbalKitMCP", "GimbalHostSupport"]),
     .executableTarget(name: "GimbalCLI", dependencies: ["GimbalKitMCP"]),
     .executableTarget(name: "GimbalHostMac", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI", "GimbalKitMCP"]),
     .executableTarget(name: "GimbalLabMac", dependencies: ["GimbalLabSupport", "GimbalHostSupport", "GimbalKit", "GimbalKitBLE", "GimbalKitDJI"]),
     .executableTarget(name: "GimbalSmoke", dependencies: ["GimbalKitBLE", "GimbalKitDJI", "GimbalKit"]),
     .testTarget(name: "GimbalKitMCPTests", dependencies: ["GimbalKitMCP", "GimbalKit"]),
     .testTarget(name: "GimbalHostSupportTests", dependencies: ["GimbalHostSupport", "GimbalKit", "GimbalKitDJI", "GimbalKitMCP", "GimbalKitSim"]),
+    .testTarget(name: "GimbalKitIntentsTests", dependencies: ["GimbalKitIntents", "GimbalHostSupport", "GimbalKit", "GimbalKitMCP"]),
 ]
 #endif
-let package = Package(name: "GimbalKit", platforms: [.macOS(.v14), .iOS(.v17)], products: products, targets: targets)
+let package = Package(name: "GimbalKit", platforms: [.macOS(.v14), .iOS(.v17), .watchOS(.v10)], products: products, targets: targets)

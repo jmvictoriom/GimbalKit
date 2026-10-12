@@ -133,10 +133,10 @@ struct PhoneHomeView: View {
             VStack(alignment: .leading, spacing: 14) {
                 heading("Parada de seguridad", symbol: "hand.raised.fill")
                 Button(role: .destructive) { Task { await model.humanStop() } } label: {
-                    Label("PARADA", systemImage: "stop.fill")
-                        .font(.title2.bold()).frame(maxWidth: .infinity).padding(.vertical, 8)
+                    Text("PARADA")
                 }
-                .buttonStyle(NeuButtonStyle(danger: true))
+                .buttonStyle(NeuStopButtonStyle())
+                .accessibilityLabel("Parada")
                 .accessibilityHint("Detiene el estabilizador sin esperar una conexión nueva")
             }
         }

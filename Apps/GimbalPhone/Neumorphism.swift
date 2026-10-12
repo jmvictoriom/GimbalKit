@@ -229,3 +229,61 @@ struct NeuGauge: View {
     }
 
 }
+
+
+/// Botón de PARADA: disco rojo con degradado y halo, sobre un botón neumórfico circular dentro de un pozo hundido.
+/// Al pulsarlo se hunde (sombras invertidas), el halo se atenúa y el disco se encoge. Pensado para pulsarse sin mirar: 184 pt de diámetro.
+struct NeuStopButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        let palette = NeuPalette(scheme: scheme)
+        let pressed = configuration.isPressed
+        VStack(spacing: 16) {
+            ZStack {
+                // Pozo hundido que aloja el botón.
+                Circle()
+                    .fill(palette.background
+                        .shadow(.inner(color: palette.darkShadow.opacity(0.85), radius: 9, x: 6, y: 6))
+                        .shadow(.inner(color: palette.lightShadow.opacity(0.9), radius: 9, x: -6, y: -6)))
+                    .frame(width: 184, height: 184)
+                // Botón elevado; al pulsar se hunde.
+                Group {
+                    if pressed {
+                        Circle().fill(palette.background
+                            .shadow(.inner(color: palette.darkShadow.opacity(0.8), radius: 7, x: 5, y: 5))
+                            .shadow(.inner(color: palette.lightShadow.opacity(0.85), radius: 7, x: -5, y: -5)))
+                    } else {
+                        Circle().fill(palette.background)
+                            .shadow(color: palette.darkShadow.opacity(0.7), radius: 9, x: 6, y: 6)
+                            .shadow(color: palette.lightShadow.opacity(0.9), radius: 9, x: -6, y: -6)
+                    }
+                }
+                .frame(width: 144, height: 144)
+                // Disco rojo con degradado, brillo superior y halo.
+                Circle()
+                    .fill(LinearGradient(colors: [Color(hex: 0xFF7A7F), Color(hex: 0xD8343B)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .overlay(Circle().strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.6), .clear], startPoint: .topLeading, endPoint: .center),
+                        lineWidth: 2.5))
+                    .frame(width: 108, height: 108)
+                    .shadow(color: NeuPalette.red.opacity(pressed ? 0.22 : 0.55), radius: pressed ? 8 : 22, x: 0, y: pressed ? 2 : 9)
+                    .scaleEffect(pressed && !reduceMotion ? 0.94 : 1)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 38, weight: .black))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    .scaleEffect(pressed && !reduceMotion ? 0.94 : 1)
+            }
+            configuration.label
+                .font(.headline.weight(.heavy))
+                .tracking(3)
+                .foregroundStyle(palette.text)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
+    }
+}

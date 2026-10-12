@@ -46,7 +46,8 @@ targets += [
         path: "Apps",
         exclude: ["project.yml", "GimbalPhone/GimbalPhoneApp.swift", "GimbalPhone/PhoneHomeView.swift",
                   "GimbalPhone/Info.plist", "GimbalWatch/GimbalWatchApp.swift", "GimbalWatch/WatchHomeView.swift",
-                  "GimbalWatch/Info.plist", "GimbalKitApps.xcodeproj"],
+                  "GimbalWatch/Info.plist", "GimbalKitApps.xcodeproj",
+                  "GimbalPhone/Assets.xcassets", "GimbalWatch/Assets.xcassets"],
         sources: ["GimbalPhone/PhoneWatchBridge.swift", "GimbalWatch/WatchConnectivityClient.swift", "Tests"]
     ),
 ]

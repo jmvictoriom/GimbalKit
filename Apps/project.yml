@@ -39,6 +39,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "4"
         SWIFT_STRICT_CONCURRENCY: complete
         CODE_SIGNING_ALLOWED: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   GimbalPhone:
     type: application
     platform: iOS
@@ -78,3 +79,4 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_STRICT_CONCURRENCY: complete
         CODE_SIGNING_ALLOWED: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

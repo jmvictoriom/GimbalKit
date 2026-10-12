@@ -137,6 +137,17 @@ public actor HostRuntime: GimbalService {
                             lease: lease.map { LeaseStatus(zone: $0.zone, expiresAt: $0.expiresAt, remainingSeconds: max(0, $0.expiresAt.timeIntervalSince(clock.now()))) })
     }
     public func zones() -> [ZoneRecord] { savedZones.map(ZoneRecord.init) }
+    public func deleteZone(name: String) async throws {
+        guard !looking, !editing else { throw NavigationError.busy }
+        guard savedZones.contains(where: { $0.name == name }) else { throw ZoneStoreError.invalidZone }
+        editing = true
+        defer { editing = false }
+        let updated = savedZones.filter { $0.name != name }
+        try await store.save(updated)
+        savedZones = updated
+        if let current = rig { await current.controller.replaceZones(updated) }
+        await log("zone deleted: \(name)")
+    }
     public func look(zone: String, leaseSeconds: Double) async throws -> GimbalLookResult {
         try await look(zone: zone, leaseSeconds: leaseSeconds, stopToken: nil)
     }

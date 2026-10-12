@@ -45,6 +45,7 @@ targets += [
         dependencies: ["GimbalHostSupport", "GimbalWatchKit", "GimbalKit", "GimbalKitMCP"],
         path: "Apps",
         exclude: ["project.yml", "GimbalPhone/GimbalPhoneApp.swift", "GimbalPhone/PhoneHomeView.swift",
+                  "GimbalPhone/Neumorphism.swift", "GimbalPhone/ZoneMapView.swift", "GimbalPhone/PhoneHaptics.swift",
                   "GimbalPhone/Info.plist", "GimbalWatch/GimbalWatchApp.swift", "GimbalWatch/WatchHomeView.swift",
                   "GimbalWatch/Info.plist", "GimbalKitApps.xcodeproj",
                   "GimbalPhone/Assets.xcassets", "GimbalWatch/Assets.xcassets"],

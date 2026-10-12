@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Darwin
 
@@ -17,3 +18,4 @@ public final class HostInstanceLock: Sendable {
     }
     deinit { flock(descriptor, LOCK_UN); close(descriptor) }
 }
+#endif

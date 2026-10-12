@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Security
 import Darwin
@@ -91,3 +92,4 @@ public struct LocalFiles: Sendable {
         }
     }
 }
+#endif

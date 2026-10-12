@@ -25,8 +25,12 @@ public struct ZoneRecord: Sendable, Codable, Equatable {
 }
 public actor ZoneStore {
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/GimbalKit/zones.json")
+        guard let support = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first else {
+            preconditionFailure("Application Support no está disponible")
+        }
+        return support.appendingPathComponent("GimbalKit").appendingPathComponent("zones.json")
     }
     private struct Document: Codable { let version: Int; let zones: [ZoneRecord] }
     private let url: URL

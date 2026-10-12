@@ -27,6 +27,7 @@ public actor HostRuntime: GimbalService {
         let controller: GimbalController
         let navigator: GotoNavigator
     }
+    public nonisolated let motionStopCounter: MotionStopCounter
     private let makeLink: @Sendable () -> any HostLink
     private let store: ZoneStore
     private let clock: RuntimeClock
@@ -44,8 +45,16 @@ public actor HostRuntime: GimbalService {
     private var looking = false
     private var editing = false
 
-    public init(makeLink: @escaping @Sendable () -> any HostLink, store: ZoneStore, clock: RuntimeClock = .live) {
-        self.makeLink = makeLink; self.store = store; self.clock = clock
+    public init(
+        makeLink: @escaping @Sendable () -> any HostLink,
+        store: ZoneStore,
+        clock: RuntimeClock = .live,
+        motionStopCounter: MotionStopCounter = MotionStopCounter()
+    ) {
+        self.makeLink = makeLink
+        self.store = store
+        self.clock = clock
+        self.motionStopCounter = motionStopCounter
     }
     public static func backoff(_ failure: Int) -> Double { min(8, 0.5 * pow(2, Double(min(4, max(0, failure))))) }
     public func start() async throws {
@@ -129,23 +138,58 @@ public actor HostRuntime: GimbalService {
     }
     public func zones() -> [ZoneRecord] { savedZones.map(ZoneRecord.init) }
     public func look(zone: String, leaseSeconds: Double) async throws -> GimbalLookResult {
+        try await look(zone: zone, leaseSeconds: leaseSeconds, stopToken: nil)
+    }
+
+    public func look(zone: String, leaseSeconds: Double, stopToken: UInt64?) async throws -> GimbalLookResult {
+        if let stopToken {
+            guard motionStopCounter.read() == stopToken else { throw NavigationError.interrupted }
+        }
         guard let captured = rig else { throw SafetyViolation.poseUnavailable }
         guard referenceReady else { throw NavigationError.referenceRequired }
         guard leaseSeconds.isFinite, leaseSeconds > 0, leaseSeconds <= 30 else { throw SafetyViolation.invalidDuration }
         guard !looking, !editing else { throw NavigationError.busy }
         looking = true
         defer { looking = false }
-        if let existing = await captured.controller.activeLease { throw SafetyViolation.busy(holder: existing.source) }
+        let existingLease = await captured.controller.activeLease
+        if let stopToken {
+            guard motionStopCounter.read() == stopToken else { throw NavigationError.interrupted }
+        }
+        if let existingLease { throw SafetyViolation.busy(holder: existingLease.source) }
         guard rig?.id == captured.id, referenceReady else { throw NavigationError.interrupted }
-        let lease = try await captured.controller.requestLease(source: .agent("mcp"), zone: zone, seconds: leaseSeconds)
+        let lease: Lease
+        do {
+            lease = try await captured.controller.requestLease(source: .agent("mcp"), zone: zone, seconds: leaseSeconds)
+        } catch {
+            if let stopToken {
+                guard motionStopCounter.read() == stopToken else { throw NavigationError.interrupted }
+            }
+            throw error
+        }
+        if let stopToken {
+            guard motionStopCounter.read() == stopToken else {
+                await captured.controller.release(lease: lease)
+                throw NavigationError.interrupted
+            }
+        }
         do {
             let arrival = try await captured.navigator.go(to: zone, source: .agent("mcp"), lease: lease)
             return GimbalLookResult(status: try await status(), arrivalPose: arrival)
+        } catch {
+            await captured.controller.release(lease: lease)
+            throw error
         }
-        catch { await captured.controller.release(lease: lease); throw error }
     }
-    public func stop() async throws { if let rig { await rig.controller.stop(source: .agent("mcp")) } }
-    public func humanStop() async { if let rig { await rig.controller.stop(source: .app) } }
+
+    public func stop() async throws {
+        motionStopCounter.increment()
+        if let rig { await rig.controller.stop(source: .agent("mcp")) }
+    }
+
+    public func humanStop() async {
+        motionStopCounter.increment()
+        if let rig { await rig.controller.stop(source: .app) }
+    }
     private func freshRig() async throws -> (Rig, Pose) {
         guard let captured = rig, let sample = await captured.device.poseSample(), sample.pose.isFinite else {
             throw SafetyViolation.poseUnavailable

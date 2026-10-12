@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Observation
 import GimbalKit
@@ -157,3 +158,4 @@ import GimbalKitMCP
         token = nil
     }
 }
+#endif
